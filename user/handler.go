@@ -29,12 +29,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var u *User
-
-	err := helper.TransactionControl(r.Context(), h.svc.db, func(ctx context.Context) error {
-		var e error
-		u, e = h.svc.Create(ctx, req.Email, req.Name)
-		return e
+	u, err := helper.InTx(r.Context(), h.svc.db, func(ctx context.Context) (*User, error) {
+		return h.svc.Create(ctx, req.Email, req.Name)
 	})
 
 	if err != nil {
