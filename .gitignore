@@ -1,2 +1,5 @@
+/.env
 /anz-tranning/
 /env/
+/go.mod/
+/go.sum/
