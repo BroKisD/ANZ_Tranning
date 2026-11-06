@@ -1,6 +1,8 @@
 package user
 
 import (
+	"anz-training/helper"
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -27,7 +29,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.svc.Create(r.Context(), req.Email, req.Name)
+	var u *User
+
+	err := helper.TransactionControl(r.Context(), h.svc.db, func(ctx context.Context) error {
+		var e error
+		u, e = h.svc.Create(ctx, req.Email, req.Name)
+		return e
+	})
+
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrEmailTaken):
