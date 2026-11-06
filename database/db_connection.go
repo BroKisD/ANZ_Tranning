@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 )
@@ -19,10 +20,17 @@ func ConnectDatabase() error {
 		return err
 	}
 
-	connectionString := os.Getenv("DB_USER") + ":" + os.Getenv("DB_PASSWORD") + "@tcp(" + os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT") + ")/" +
-		os.Getenv("DB_NAME") + "?parseTime=true&multiStatements=true&loc=UTC"
+	cfg := mysql.NewConfig()
+	cfg.User = os.Getenv("DB_USER")
+	cfg.Passwd = os.Getenv("DB_PASSWORD")
+	cfg.Net = "tcp"
+	cfg.Addr = os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT")
+	cfg.DBName = os.Getenv("DB_NAME")
+	cfg.ParseTime = true
+	cfg.MultiStatements = true
+	cfg.Loc, _ = time.LoadLocation("UTC")
 
-	DB, err = sql.Open("mysql", connectionString)
+	DB, err = sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
 	}
