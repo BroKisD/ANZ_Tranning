@@ -15,10 +15,16 @@ func main() {
 		log.Fatalf("usage: %s {serve|migrate up|migrate status|migrate down-to <v>}", os.Args[0])
 	}
 
-	if err := database.ConnectDatabase(); err != nil {
+	db, err := database.ConnectDatabase()
+	if err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
-	defer database.DB.Close()
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("get sql.DB: %v", err)
+	}
+	defer sqlDB.Close()
 
 	switch os.Args[1] {
 	case "serve":

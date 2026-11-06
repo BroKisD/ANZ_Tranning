@@ -2,22 +2,21 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-var DB *sql.DB
+var DB *gorm.DB
 
-func ConnectDatabase() error {
-
-	err := godotenv.Load()
-	if err != nil {
-		return err
+func ConnectDatabase() (*gorm.DB, error) {
+	if err := godotenv.Load(); err != nil {
+		return nil, err
 	}
 
 	cfg := mysql.NewConfig()
@@ -30,18 +29,30 @@ func ConnectDatabase() error {
 	cfg.MultiStatements = true
 	cfg.Loc, _ = time.LoadLocation("UTC")
 
-	DB, err = sql.Open("mysql", cfg.FormatDSN())
+	db, err := gorm.Open(gormmysql.Open(cfg.FormatDSN()), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Warn),
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(25)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := DB.PingContext(ctx); err != nil {
-		DB.Close()
-		return err
+	if err := sqlDB.PingContext(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
 	}
 
-	return nil
+	DB = db
+	return db, nil
 }

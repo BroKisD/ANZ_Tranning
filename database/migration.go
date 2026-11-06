@@ -1,21 +1,31 @@
 package database
 
 import (
+	"database/sql"
 	"embed"
+	"fmt"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/pressly/goose/v3"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+func sqlDB() (*sql.DB, error) {
+	return DB.DB()
+}
+
 func MigrateUp() error {
 	goose.SetBaseFS(migrationsFS)
 	if err := goose.SetDialect("mysql"); err != nil {
 		return err
 	}
-	return goose.Up(DB, "migrations")
+
+	db, err := sqlDB()
+	if err != nil {
+		return fmt.Errorf("get sql.DB for migration: %w", err)
+	}
+	return goose.Up(db, "migrations")
 }
 
 func MigrateStatus() error {
@@ -23,7 +33,12 @@ func MigrateStatus() error {
 	if err := goose.SetDialect("mysql"); err != nil {
 		return err
 	}
-	return goose.Status(DB, "migrations")
+
+	db, err := sqlDB()
+	if err != nil {
+		return fmt.Errorf("get sql.DB for migration: %w", err)
+	}
+	return goose.Status(db, "migrations")
 }
 
 func MigrateDownTo(v int64) error {
@@ -31,5 +46,10 @@ func MigrateDownTo(v int64) error {
 	if err := goose.SetDialect("mysql"); err != nil {
 		return err
 	}
-	return goose.DownTo(DB, "migrations", v)
+
+	db, err := sqlDB()
+	if err != nil {
+		return fmt.Errorf("get sql.DB for migration: %w", err)
+	}
+	return goose.DownTo(db, "migrations", v)
 }

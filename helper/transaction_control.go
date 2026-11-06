@@ -2,38 +2,33 @@ package helper
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
+
+	"gorm.io/gorm"
 )
 
 type txKey struct{}
 
 func InTx[T any](
 	ctx context.Context,
-	db *sql.DB,
+	db *gorm.DB,
 	fn func(ctx context.Context) (T, error),
 ) (T, error) {
 	var zero T
+	var result T
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return zero, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		txCtx := context.WithValue(ctx, txKey{}, tx)
 
-	ctx = context.WithValue(ctx, txKey{}, tx)
-
-	v, err := fn(ctx)
-	if err != nil {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			return zero, errors.Join(err, fmt.Errorf("rollback: %w", rbErr))
+		v, err := fn(txCtx)
+		if err != nil {
+			return err
 		}
+		result = v
+		return nil
+	})
+
+	if err != nil {
 		return zero, err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return zero, fmt.Errorf("commit: %w", err)
-	}
-	return v, nil
+	return result, nil
 }

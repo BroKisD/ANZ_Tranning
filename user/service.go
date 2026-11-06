@@ -3,18 +3,19 @@ package user
 import (
 	"anz-training/helper"
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 type Service struct {
-	db   *sql.DB
-	repo Repo
+	db   *gorm.DB
+	repo *Repo
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db, repo: Repo{}}
+func NewService(db *gorm.DB) *Service {
+	return &Service{db: db, repo: NewRepo(db)}
 }
 
 func (s *Service) Create(ctx context.Context, email, name string) (*User, error) {
@@ -24,14 +25,14 @@ func (s *Service) Create(ctx context.Context, email, name string) (*User, error)
 		return nil, fmt.Errorf("%w: email and name are required, email must be valid", ErrValidation)
 	}
 
-	if _, err := s.repo.FindByEmail(ctx, s.db, email); err == nil {
+	if _, err := s.repo.FindByEmail(ctx, email); err == nil {
 		return nil, ErrEmailTaken
 	} else if err != ErrNotFound {
 		return nil, err
 	}
 
 	u := &User{Email: email, Name: name}
-	if err := s.repo.Insert(ctx, s.db, u); err != nil {
+	if err := s.repo.Insert(ctx, u); err != nil {
 		return nil, err
 	}
 
@@ -40,5 +41,5 @@ func (s *Service) Create(ctx context.Context, email, name string) (*User, error)
 
 func (s *Service) GetByEmail(ctx context.Context, email string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	return s.repo.FindByEmail(ctx, s.db, email)
+	return s.repo.FindByEmail(ctx, email)
 }

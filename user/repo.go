@@ -2,32 +2,26 @@ package user
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
-// Querier is satisfied by both *sql.DB and *sql.Tx, so repos work
-// inside or outside a transaction with no changes.
-type Querier interface {
-	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row
+type Repo struct {
+	db *gorm.DB
 }
 
-var (
-	_ Querier = (*sql.DB)(nil)
-	_ Querier = (*sql.Tx)(nil)
-)
+func NewRepo(db *gorm.DB) *Repo {
+	return &Repo{db: db}
+}
 
-type Repo struct{}
-
-func (Repo) FindByEmail(ctx context.Context, q Querier, email string) (*User, error) {
-	const query = `SELECT id, email, name, created_at FROM users WHERE email = ?`
+func (r *Repo) FindByEmail(ctx context.Context, email string) (*User, error) {
 	var u User
-	err := q.QueryRowContext(ctx, query, email).
-		Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := r.db.WithContext(ctx).
+		Where("email = ?", email).
+		First(&u).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -36,16 +30,9 @@ func (Repo) FindByEmail(ctx context.Context, q Querier, email string) (*User, er
 	return &u, nil
 }
 
-func (Repo) Insert(ctx context.Context, q Querier, u *User) error {
-	const query = `INSERT INTO users (email, name) VALUES (?, ?)`
-	res, err := q.ExecContext(ctx, query, u.Email, u.Name)
-	if err != nil {
+func (r *Repo) Insert(ctx context.Context, u *User) error {
+	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {
 		return fmt.Errorf("insert user: %w", err)
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("last insert id: %w", err)
-	}
-	u.ID = id
 	return nil
 }
