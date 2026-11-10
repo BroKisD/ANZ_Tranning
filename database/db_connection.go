@@ -15,9 +15,7 @@ import (
 var DB *gorm.DB
 
 func ConnectDatabase() (*gorm.DB, error) {
-	if err := godotenv.Load(); err != nil {
-		return nil, err
-	}
+	_ = godotenv.Load()
 
 	cfg := mysql.NewConfig()
 	cfg.User = os.Getenv("DB_USER")

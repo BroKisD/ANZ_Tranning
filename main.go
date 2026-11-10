@@ -37,6 +37,12 @@ func main() {
 }
 
 func serve() {
+	log.Println("==> Running database migrations...")
+	if err := database.MigrateUp(); err != nil {
+		log.Fatalf("migrate up failed: %v", err)
+	}
+	log.Println("==> Migrations completed successfully!")
+
 	svc := user.NewService(database.DB)
 	h := user.NewHandler(svc)
 
