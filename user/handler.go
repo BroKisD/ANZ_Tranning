@@ -1,7 +1,6 @@
 package user
 
 import (
-	"anz-training/helper"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,10 +9,14 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc UserService
+}
+type UserService interface {
+	Create(ctx context.Context, email, name string) (*User, error)
+	GetByEmail(ctx context.Context, email string) (*User, error)
 }
 
-func NewHandler(svc *Service) *Handler {
+func NewHandler(svc UserService) *Handler {
 	return &Handler{svc: svc}
 }
 
@@ -29,9 +32,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := helper.InTx(r.Context(), h.svc.db, func(ctx context.Context) (*User, error) {
-		return h.svc.Create(ctx, req.Email, req.Name)
-	})
+	u, err := h.svc.Create(r.Context(), req.Email, req.Name)
 
 	if err != nil {
 		switch {

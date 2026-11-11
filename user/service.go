@@ -11,11 +11,20 @@ import (
 
 type Service struct {
 	db   *gorm.DB
-	repo *Repo
+	repo UserRepository
+}
+
+type UserRepository interface {
+	FindByEmail(ctx context.Context, email string) (*User, error)
+	Insert(ctx context.Context, u *User) error
 }
 
 func NewService(db *gorm.DB) *Service {
 	return &Service{db: db, repo: NewRepo(db)}
+}
+
+func NewServiceWithRepo(repo UserRepository) *Service {
+	return &Service{repo: repo}
 }
 
 func (s *Service) Create(ctx context.Context, email, name string) (*User, error) {
