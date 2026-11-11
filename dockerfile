@@ -18,6 +18,6 @@ COPY --from=builder /app /app
 
 USER nonroot:nonroot
 
-EXPOSE 8080
+EXPOSE 9090
 
 ENTRYPOINT ["/app"]
