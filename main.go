@@ -17,12 +17,14 @@ func main() {
 
 	db, err := database.ConnectDatabase()
 	if err != nil {
-		log.Fatalf("db connect: %v", err)
+		log.Fatalf("db connect failed: %v", err)
+		panic(err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
 		log.Fatalf("get sql.DB: %v", err)
+		panic(err)
 	}
 	defer sqlDB.Close()
 
@@ -37,11 +39,10 @@ func main() {
 }
 
 func serve() {
-	log.Println("==> Running database migrations...")
 	if err := database.MigrateUp(); err != nil {
 		log.Fatalf("migrate up failed: %v", err)
+		panic(err)
 	}
-	log.Println("==> Migrations completed successfully!")
 
 	svc := user.NewService(database.DB)
 	h := user.NewHandler(svc)
