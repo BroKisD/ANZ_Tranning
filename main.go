@@ -51,7 +51,7 @@ func serve() {
 	mux.HandleFunc("POST /users", h.Create)
 	mux.HandleFunc("GET /users", h.Get)
 
-	addr := ":9090"
+	addr := ":8080"
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
