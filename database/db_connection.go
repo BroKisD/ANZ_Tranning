@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -20,12 +21,27 @@ func ConnectDatabase() (*gorm.DB, error) {
 	cfg := mysql.NewConfig()
 	cfg.User = os.Getenv("DB_USER")
 	cfg.Passwd = os.Getenv("DB_PASSWORD")
-	cfg.Net = "tcp"
-	cfg.Addr = os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT")
 	cfg.DBName = os.Getenv("DB_NAME")
 	cfg.ParseTime = true
 	cfg.MultiStatements = true
 	cfg.Loc, _ = time.LoadLocation("UTC")
+
+	instanceConnName := os.Getenv("INSTANCE_CONNECTION_NAME")
+	if instanceConnName != "" {
+		cfg.Net = "unix"
+		cfg.Addr = fmt.Sprintf("/cloudsql/%s", instanceConnName)
+	} else {
+		cfg.Net = "tcp"
+		host := os.Getenv("DB_HOST")
+		port := os.Getenv("DB_PORT")
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if port == "" {
+			port = "3306"
+		}
+		cfg.Addr = fmt.Sprintf("%s:%s", host, port)
+	}
 
 	db, err := gorm.Open(gormmysql.Open(cfg.FormatDSN()), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
