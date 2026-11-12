@@ -25,6 +25,7 @@ func ConnectDatabase() (*gorm.DB, error) {
 	cfg.ParseTime = true
 	cfg.MultiStatements = true
 	cfg.Loc, _ = time.LoadLocation("UTC")
+	cfg.AllowCleartextPasswords = true
 
 	instanceConnName := os.Getenv("INSTANCE_CONNECTION_NAME")
 	if instanceConnName != "" {
