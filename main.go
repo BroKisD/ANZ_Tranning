@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"anz-training/database"
+	"anz-training/helper"
 	"anz-training/user"
 )
 
@@ -47,9 +48,11 @@ func serve() {
 	svc := user.NewService(database.DB)
 	h := user.NewHandler(svc)
 
+	secretKey := "khoavippro123"
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /users", h.Create)
-	mux.HandleFunc("GET /users", h.Get)
+	mux.HandleFunc("POST /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Create)).ServeHTTP)
+	mux.HandleFunc("GET /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Get)).ServeHTTP)
 
 	addr := ":8080"
 	log.Printf("listening on %s", addr)
