@@ -55,4 +55,9 @@ jobs:
             --image $IMAGE_BASE:latest \
             --platform managed \
             --region asia-southeast1 \
-            --allow-unauthenticated
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=512Mi \
+            --min-instances=0 \
+            --max-instances=1 \
+            --add-cloudsql-instances=${{ secrets.GCP_PROJECT_ID }}:asia-southeast1:anz-trainning
