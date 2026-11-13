@@ -1,0 +1,52 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: anz-training-service
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "5"
+        run.googleapis.com/cloudsql-instances: project-9991dcfb-85ec-4182-b68:asia-southeast1:anz-trainning
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: 386127327935-compute@developer.gserviceaccount.com
+      containers:
+        - image: asia-southeast1-docker.pkg.dev/project-9991dcfb-85ec-4182-b68/anz-repo/anz-training:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: DB_USER
+                  key: latest
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: DB_PASSWORD
+                  key: latest
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: DB_NAME
+                  key: latest
+            - name: INSTANCE_CONNECTION_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: INSTANCE_CONNECTION_NAME
+                  key: latest
+            - name: DB_SOCKET_DIR
+              valueFrom:
+                secretKeyRef:
+                  name: DB_SOCKET_DIR
+                  key: latest
