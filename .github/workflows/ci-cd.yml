@@ -46,10 +46,14 @@ jobs:
           docker build -t $IMAGE_BASE:${{ github.sha }} -t $IMAGE_BASE:latest .
           docker push $IMAGE_BASE:${{ github.sha }}
           docker push $IMAGE_BASE:latest
-
-      - name: Deploy to Cloud Run via service.yml
+       
+      - name: Prepare and Validate service.yaml
         env:
           IMAGE_BASE: asia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/anz-repo/anz-training
         run: |
-          sed -i "s|image:.*|image: $IMAGE_BASE:latest|g" service.yml
-          gcloud run services replace service.yml --region asia-southeast1
+          sed -i "s|image:.*|image: $IMAGE_BASE:latest|g" service.yaml          
+          gcloud run services replace service.yaml --region asia-southeast1 --dry-run
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services replace service.yaml --region asia-southeast1
