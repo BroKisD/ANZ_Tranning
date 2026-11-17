@@ -18,6 +18,29 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Authenticate and Setup Google Cloud SDK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Check if service.yml exists and handle teardown if missing
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          if [ ! -f service.yml ]; then
+            
+            gcloud run services delete anz-training-service \
+              --region asia-southeast1 \
+              --quiet 
+              
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -35,17 +58,6 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t anz-training:${{ github.sha }} .
-
-      - name: Authenticate to Google Cloud
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-
-      - name: Set up Cloud SDK
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: google-github-actions/setup-gcloud@v2
 
       - name: Authorize Docker to Artifact Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
