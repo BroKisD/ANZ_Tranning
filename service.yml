@@ -50,3 +50,8 @@ spec:
                 secretKeyRef:
                   name: DB_SOCKET_DIR
                   key: latest
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: API_KEY
+                  key: latest

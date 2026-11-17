@@ -48,13 +48,20 @@ func serve() {
 	svc := user.NewService(database.DB)
 	h := user.NewHandler(svc)
 
-	secretKey := "khoavippro123"
+	secretKey := os.Getenv("API_KEY")
+	if secretKey == "" {
+		log.Fatal("API_KEY required")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Create)).ServeHTTP)
 	mux.HandleFunc("GET /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Get)).ServeHTTP)
 
-	addr := ":8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
