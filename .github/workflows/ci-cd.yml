@@ -24,36 +24,50 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Run static checks
+        run: go vet ./...
+
       - name: Run unit tests
         run: go test -v ./...
 
+      - name: Run integration tests
+        run: go test -v -tags=integration ./...
+
+      - name: Build Docker image
+        run: docker build -t anz-training:${{ github.sha }} .
+
       - name: Authenticate to Google Cloud
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Authorize Docker to Artifact Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: gcloud auth configure-docker asia-southeast1-docker.pkg.dev
 
-      - name: Build and Push Docker Image
+      - name: Tag and push Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           IMAGE_BASE: asia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/anz-repo/anz-training
         run: |
-          docker build -t $IMAGE_BASE:${{ github.sha }} -t $IMAGE_BASE:latest .
+          docker tag anz-training:${{ github.sha }} $IMAGE_BASE:${{ github.sha }}
           docker push $IMAGE_BASE:${{ github.sha }}
-          docker push $IMAGE_BASE:latest
        
       - name: Prepare and Validate service.yml
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           IMAGE_BASE: asia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/anz-repo/anz-training
         run: |
-          sed -i "s|image:.*|image: $IMAGE_BASE:latest|g" service.yml          
+          sed -i "s|image:.*|image: $IMAGE_BASE:${{ github.sha }}|g" service.yml
           gcloud run services replace service.yml --region asia-southeast1 --dry-run
 
       - name: Deploy to Cloud Run
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           gcloud run services replace service.yml --region asia-southeast1
