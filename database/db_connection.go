@@ -29,8 +29,12 @@ func ConnectDatabase() (*gorm.DB, error) {
 
 	instanceConnName := os.Getenv("INSTANCE_CONNECTION_NAME")
 	if instanceConnName != "" {
+		socketDir := os.Getenv("DB_SOCKET_DIR")
+		if socketDir == "" {
+			socketDir = "/cloudsql"
+		}
 		cfg.Net = "unix"
-		cfg.Addr = fmt.Sprintf("/cloudsql/%s", instanceConnName)
+		cfg.Addr = fmt.Sprintf("%s/%s", socketDir, instanceConnName)
 	} else {
 		cfg.Net = "tcp"
 		host := os.Getenv("DB_HOST")
