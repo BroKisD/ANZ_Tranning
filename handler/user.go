@@ -1,4 +1,4 @@
-package user
+package handler
 
 import (
 	"context"
@@ -6,39 +6,37 @@ import (
 	"errors"
 	"log"
 	"net/http"
+
+	"anz-training/model"
 )
 
-type Handler struct {
-	svc UserService
-}
 type UserService interface {
-	Create(ctx context.Context, email, name string) (*User, error)
-	GetByEmail(ctx context.Context, email string) (*User, error)
+	Create(ctx context.Context, email, name string) (*model.User, error)
+	GetByEmail(ctx context.Context, email string) (*model.User, error)
 }
 
-func NewHandler(svc UserService) *Handler {
-	return &Handler{svc: svc}
-}
+type UserHandler struct{ svc UserService }
 
-type createReq struct {
+func NewUserHandler(svc UserService) *UserHandler { return &UserHandler{svc: svc} }
+
+type createUserReq struct {
 	Email string `json:"email"`
 	Name  string `json:"name"`
 }
 
-func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	var req createReq
+func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req createUserReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	u, err := h.svc.Create(r.Context(), req.Email, req.Name)
-
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrEmailTaken):
+		case errors.Is(err, model.ErrEmailTaken):
 			writeErr(w, http.StatusConflict, "email already in use")
-		case errors.Is(err, ErrValidation):
+		case errors.Is(err, model.ErrValidation):
 			writeErr(w, http.StatusUnprocessableEntity, err.Error())
 		default:
 			log.Printf("create user: %v", err)
@@ -49,7 +47,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, u)
 }
 
-func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	email := r.URL.Query().Get("email")
 	if email == "" {
 		writeErr(w, http.StatusBadRequest, "email query param required")
@@ -58,7 +56,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 	u, err := h.svc.GetByEmail(r.Context(), email)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "user not found")
 			return
 		}
@@ -68,8 +66,6 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, u)
 }
-
-// ---- tiny response helpers ----
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

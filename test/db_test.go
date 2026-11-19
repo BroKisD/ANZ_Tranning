@@ -4,7 +4,10 @@
 package test
 
 import (
-	"anz-training/user"
+	"anz-training/handler"
+	"anz-training/model"
+	"anz-training/repository"
+	"anz-training/service"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -57,7 +60,7 @@ func TestUsersAPI_WithMySQL(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	h := user.NewHandler(user.NewService(db))
+	h := handler.NewUserHandler(service.NewUserService(repository.NewStore(db)))
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /users", h.Create)
 	mux.HandleFunc("GET /users", h.Get)
@@ -68,7 +71,7 @@ func TestUsersAPI_WithMySQL(t *testing.T) {
 		"email": "  ADA@EXAMPLE.COM ",
 		"name":  " Ada Lovelace ",
 	}, http.StatusCreated)
-	if created.Email != "ada@example.com" || created.Name != "Ada Lovelace" || created.ID == 0 {
+	if created.Email != "ada@example.com" || created.Name != "Ada Lovelace" || created.ID == "" {
 		t.Fatalf("unexpected created user: %#v", created)
 	}
 
@@ -83,7 +86,7 @@ func TestUsersAPI_WithMySQL(t *testing.T) {
 	}, http.StatusConflict)
 }
 
-func requestJSON(t *testing.T, server *httptest.Server, method, path string, body any, wantStatus int) user.User {
+func requestJSON(t *testing.T, server *httptest.Server, method, path string, body any, wantStatus int) model.User {
 	t.Helper()
 
 	var payload *bytes.Reader
@@ -113,7 +116,7 @@ func requestJSON(t *testing.T, server *httptest.Server, method, path string, bod
 		t.Fatalf("%s %s: got status %d, want %d", method, path, resp.StatusCode, wantStatus)
 	}
 
-	var result user.User
+	var result model.User
 	if wantStatus < http.StatusBadRequest {
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatal(err)

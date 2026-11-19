@@ -1,7 +1,8 @@
 package test
 
 import (
-	"anz-training/user"
+	"anz-training/handler"
+	"anz-training/model"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,33 +13,33 @@ import (
 
 // MockUserService implements UserService for testing purposes
 type MockUserService struct {
-	CreateFunc     func(ctx context.Context, email, name string) (*user.User, error)
-	GetByEmailFunc func(ctx context.Context, email string) (*user.User, error)
+	CreateFunc     func(ctx context.Context, email, name string) (*model.User, error)
+	GetByEmailFunc func(ctx context.Context, email string) (*model.User, error)
 }
 
-func (m *MockUserService) Create(ctx context.Context, email, name string) (*user.User, error) {
+func (m *MockUserService) Create(ctx context.Context, email, name string) (*model.User, error) {
 	if m.CreateFunc != nil {
 		return m.CreateFunc(ctx, email, name)
 	}
 	return nil, nil
 }
 
-func (m *MockUserService) GetByEmail(ctx context.Context, email string) (*user.User, error) {
+func (m *MockUserService) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	if m.GetByEmailFunc != nil {
 		return m.GetByEmailFunc(ctx, email)
 	}
-	return nil, user.ErrNotFound
+	return nil, model.ErrNotFound
 }
 
 func TestHandler_Create(t *testing.T) {
 	t.Run("Success - 201 Created", func(t *testing.T) {
 		mockSvc := &MockUserService{
-			CreateFunc: func(ctx context.Context, email, name string) (*user.User, error) {
-				return &user.User{Email: email, Name: name}, nil
+			CreateFunc: func(ctx context.Context, email, name string) (*model.User, error) {
+				return &model.User{Email: email, Name: name}, nil
 			},
 		}
 
-		handler := user.NewHandler(mockSvc)
+		handler := handler.NewUserHandler(mockSvc)
 
 		reqBody := map[string]string{"email": "test@example.com", "name": "Test User"}
 		body, _ := json.Marshal(reqBody)
@@ -56,12 +57,12 @@ func TestHandler_Create(t *testing.T) {
 
 	t.Run("Failure - 409 Conflict (Email Taken)", func(t *testing.T) {
 		mockSvc := &MockUserService{
-			CreateFunc: func(ctx context.Context, email, name string) (*user.User, error) {
-				return nil, user.ErrEmailTaken
+			CreateFunc: func(ctx context.Context, email, name string) (*model.User, error) {
+				return nil, model.ErrEmailTaken
 			},
 		}
 
-		handler := user.NewHandler(mockSvc)
+		handler := handler.NewUserHandler(mockSvc)
 
 		reqBody := map[string]string{"email": "existing@example.com", "name": "User"}
 		body, _ := json.Marshal(reqBody)
@@ -80,12 +81,12 @@ func TestHandler_Create(t *testing.T) {
 func TestHandler_Get(t *testing.T) {
 	t.Run("Success - 200 OK", func(t *testing.T) {
 		mockSvc := &MockUserService{
-			GetByEmailFunc: func(ctx context.Context, email string) (*user.User, error) {
-				return &user.User{Email: email, Name: "Found User"}, nil
+			GetByEmailFunc: func(ctx context.Context, email string) (*model.User, error) {
+				return &model.User{Email: email, Name: "Found User"}, nil
 			},
 		}
 
-		handler := user.NewHandler(mockSvc)
+		handler := handler.NewUserHandler(mockSvc)
 
 		req := httptest.NewRequest(http.MethodGet, "/users?email=test@example.com", nil)
 		rec := httptest.NewRecorder()
@@ -99,12 +100,12 @@ func TestHandler_Get(t *testing.T) {
 
 	t.Run("Failure - 404 Not Found", func(t *testing.T) {
 		mockSvc := &MockUserService{
-			GetByEmailFunc: func(ctx context.Context, email string) (*user.User, error) {
-				return nil, user.ErrNotFound
+			GetByEmailFunc: func(ctx context.Context, email string) (*model.User, error) {
+				return nil, model.ErrNotFound
 			},
 		}
 
-		handler := user.NewHandler(mockSvc)
+		handler := handler.NewUserHandler(mockSvc)
 
 		req := httptest.NewRequest(http.MethodGet, "/users?email=notfound@example.com", nil)
 		rec := httptest.NewRecorder()

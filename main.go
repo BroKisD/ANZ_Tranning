@@ -7,8 +7,10 @@ import (
 	"strconv"
 
 	"anz-training/database"
+	"anz-training/handler"
 	"anz-training/helper"
-	"anz-training/user"
+	"anz-training/repository"
+	"anz-training/service"
 )
 
 func main() {
@@ -45,8 +47,8 @@ func serve() {
 		panic(err)
 	}
 
-	svc := user.NewService(database.DB)
-	h := user.NewHandler(svc)
+	svc := service.NewUserService(repository.NewStore(database.DB))
+	h := handler.NewUserHandler(svc)
 
 	secretKey := os.Getenv("API_KEY")
 	if secretKey == "" {
