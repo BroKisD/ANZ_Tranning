@@ -12,8 +12,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var ErrNotImplemented = errors.New("not implemented")
-
 type Store struct{ db *gorm.DB }
 
 func NewStore(db *gorm.DB) *Store { return &Store{db: db} }
@@ -74,10 +72,53 @@ func (s *Store) ListIntegrations(ctx context.Context, userID string) ([]model.Us
 }
 
 // Projects
-func (s *Store) CreateProject(ctx context.Context, p *model.Project) error { return ErrNotImplemented }
-func (s *Store) GetProject(ctx context.Context, id string) (*model.Project, error) {
-	return nil, ErrNotImplemented
+
+// CreateProject inserts a project, applying the schema defaults when unset.
+func (s *Store) CreateProject(ctx context.Context, p *model.Project) error {
+	if p.Status == "" {
+		p.Status = model.StatusPending
+	}
+	if p.CurrentStep == "" {
+		p.CurrentStep = model.StepInitializing
+	}
+	if p.BranchName == "" {
+		p.BranchName = "main"
+	}
+	if err := s.db.WithContext(ctx).Create(p).Error; err != nil {
+		return fmt.Errorf("create project: %w", err)
+	}
+	return nil
 }
+
+func (s *Store) GetProject(ctx context.Context, id string) (*model.Project, error) {
+	var p model.Project
+	err := s.db.WithContext(ctx).Where("id = ?", id).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, model.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get project: %w", err)
+	}
+	return &p, nil
+}
+
+// UpdateProject sets the given columns (keys are DB column names).
 func (s *Store) UpdateProject(ctx context.Context, id string, fields map[string]any) error {
-	return ErrNotImplemented
+	res := s.db.WithContext(ctx).Model(&model.Project{}).Where("id = ?", id).Updates(fields)
+	if res.Error != nil {
+		return fmt.Errorf("update project: %w", res.Error)
+	}
+	return nil
+}
+
+// UpdateProjectIf applies fields only when the project is currently in
+// fromStatus and reports whether it did (a compare-and-set). fields must change
+// the status, because MySQL reports changed rows, not matched rows.
+func (s *Store) UpdateProjectIf(ctx context.Context, id, fromStatus string, fields map[string]any) (bool, error) {
+	res := s.db.WithContext(ctx).Model(&model.Project{}).
+		Where("id = ? AND status = ?", id, fromStatus).Updates(fields)
+	if res.Error != nil {
+		return false, fmt.Errorf("update project: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
 }

@@ -74,7 +74,20 @@ func serve() {
 		defer sm.Close()
 		secrets = sm
 	}
-	ih := handler.NewIntegrationHandler(repository.NewStore(database.DB), secrets, masterKey, handler.HeaderUserID, nil)
+	var ownerResolver handler.OwnerResolver
+	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
+		gh, err := service.NewGitHub(service.GitHubConfig{
+			AppID:         appID,
+			PrivateKeyPEM: []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY")),
+			WebhookURL:    os.Getenv("WEBHOOK_URL"),
+			WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
+		})
+		if err != nil {
+			log.Fatalf("github app: %v", err)
+		}
+		ownerResolver = gh.InstallationOwner
+	}
+	ih := handler.NewIntegrationHandler(repository.NewStore(database.DB), secrets, masterKey, handler.HeaderUserID, ownerResolver)
 	mux.HandleFunc("GET /api/integrations/github/callback", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.GitHubCallback)).ServeHTTP)
 	mux.HandleFunc("POST /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.UpsertIntegration)).ServeHTTP)
 	mux.HandleFunc("GET /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.ListIntegrations)).ServeHTTP)

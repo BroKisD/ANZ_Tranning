@@ -54,3 +54,13 @@ func (m *SecretManager) PutSecret(ctx context.Context, secretID, value string) (
 	}
 	return name + "/versions/latest", nil
 }
+
+// GetSecret reads a secret version by its full resource name (the stored
+// anthropic_secret_ref). The caller must never log the returned value.
+func (m *SecretManager) GetSecret(ctx context.Context, ref string) (string, error) {
+	res, err := m.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: ref})
+	if err != nil {
+		return "", fmt.Errorf("access secret: %w", err)
+	}
+	return string(res.GetPayload().GetData()), nil
+}

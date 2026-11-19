@@ -7,6 +7,8 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"anz-training/model"
@@ -67,5 +69,72 @@ func TestStore_Integrations_WithMySQL(t *testing.T) {
 	// FK: integration for an unknown user is rejected
 	if err := store.UpsertIntegration(ctx, &model.UserIntegration{ID: "x", UserID: "ghost", Provider: "gcp", EncryptedCredentials: "e"}); err == nil {
 		t.Fatal("expected FK violation")
+	}
+}
+
+// TestStore_Projects_WithMySQL checks defaults, NULL-able columns and the
+// compare-and-set used to start a run exactly once.
+func TestStore_Projects_WithMySQL(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ctx := context.Background()
+	_, thisFile, _, _ := runtime.Caller(0)
+
+	c, err := mysql.Run(ctx, "mysql:8.0",
+		mysql.WithDatabase("testdb"), mysql.WithUsername("test"), mysql.WithPassword("test"),
+		mysql.WithScripts(filepath.Join(filepath.Dir(thisFile), "testdata", "schema.sql")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	dsn, _ := c.ConnectionString(ctx, "parseTime=true")
+	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := repository.NewStore(db)
+	if err := store.InsertUser(ctx, &model.User{ID: "u1", Email: "a@b.com", Name: "A"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetProject(ctx, "nope"); err != model.ErrNotFound {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	p := &model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "todo"}
+	if err := store.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetProject(ctx, "p1")
+	if err != nil || got.Status != model.StatusPending || got.CurrentStep != model.StepInitializing || got.BranchName != "main" {
+		t.Fatalf("defaults not applied: %+v %v", got, err)
+	}
+
+	// exactly one of several concurrent starters wins the pending -> generating CAS
+	var wins int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := store.UpdateProjectIf(ctx, "p1", model.StatusPending, map[string]any{"status": model.StatusGenerating})
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				atomic.AddInt32(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("%d goroutines won the CAS, want 1", wins)
+	}
+
+	if err := store.UpdateProject(ctx, "p1", map[string]any{"repo_url": "https://github.com/a/b", "pr_url": "https://github.com/a/b/pull/1", "current_step": model.StepRepoCreated}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.GetProject(ctx, "p1")
+	if got.RepoURL != "https://github.com/a/b" || got.PRURL != "https://github.com/a/b/pull/1" || got.CurrentStep != model.StepRepoCreated || got.Status != model.StatusGenerating {
+		t.Fatalf("update did not persist: %+v", got)
 	}
 }

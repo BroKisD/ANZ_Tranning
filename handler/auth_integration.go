@@ -84,7 +84,7 @@ func (h *IntegrationHandler) GitHubCallback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
-	if owner == "" && h.owner != nil {
+	if h.owner != nil { // GitHub is authoritative; ignore a client-supplied owner
 		if owner, err = h.owner(r.Context(), instID); err != nil {
 			log.Printf("resolve github owner: %v", err)
 			writeErr(w, http.StatusBadGateway, "could not resolve github owner")
