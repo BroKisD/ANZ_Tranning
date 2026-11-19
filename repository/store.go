@@ -9,6 +9,7 @@ import (
 	"anz-training/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrNotImplemented = errors.New("not implemented")
@@ -38,11 +39,38 @@ func (s *Store) InsertUser(ctx context.Context, u *model.User) error {
 }
 
 // Integrations
+
+// UpsertIntegration inserts or, on (user_id, provider) conflict, replaces the
+// encrypted credentials.
 func (s *Store) UpsertIntegration(ctx context.Context, in *model.UserIntegration) error {
-	return ErrNotImplemented
+	err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "provider"}},
+		DoUpdates: clause.AssignmentColumns([]string{"encrypted_credentials"}),
+	}).Create(in).Error
+	if err != nil {
+		return fmt.Errorf("upsert integration: %w", err)
+	}
+	return nil
 }
+
 func (s *Store) GetIntegration(ctx context.Context, userID, provider string) (*model.UserIntegration, error) {
-	return nil, ErrNotImplemented
+	var in model.UserIntegration
+	err := s.db.WithContext(ctx).Where("user_id = ? AND provider = ?", userID, provider).First(&in).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, model.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get integration: %w", err)
+	}
+	return &in, nil
+}
+
+func (s *Store) ListIntegrations(ctx context.Context, userID string) ([]model.UserIntegration, error) {
+	var out []model.UserIntegration
+	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("list integrations: %w", err)
+	}
+	return out, nil
 }
 
 // Projects

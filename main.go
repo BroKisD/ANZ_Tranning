@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 
+	"anz-training/crypto"
 	"anz-training/database"
 	"anz-training/handler"
 	"anz-training/helper"
@@ -58,6 +60,24 @@ func serve() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Create)).ServeHTTP)
 	mux.HandleFunc("GET /users", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(h.Get)).ServeHTTP)
+
+	masterKey, err := crypto.LoadMasterKey(os.Getenv("ENCRYPTION_MASTER_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	var secrets handler.SecretStore
+	if project := os.Getenv("SECRET_MANAGER_PROJECT"); project != "" {
+		sm, err := service.NewSecretManager(context.Background(), project)
+		if err != nil {
+			log.Fatalf("secret manager: %v", err)
+		}
+		defer sm.Close()
+		secrets = sm
+	}
+	ih := handler.NewIntegrationHandler(repository.NewStore(database.DB), secrets, masterKey, handler.HeaderUserID, nil)
+	mux.HandleFunc("GET /api/integrations/github/callback", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.GitHubCallback)).ServeHTTP)
+	mux.HandleFunc("POST /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.UpsertIntegration)).ServeHTTP)
+	mux.HandleFunc("GET /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.ListIntegrations)).ServeHTTP)
 
 	port := os.Getenv("PORT")
 	if port == "" {
