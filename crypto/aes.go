@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const keySize = 32
@@ -19,6 +20,7 @@ var ErrInvalidCiphertext = errors.New("invalid ciphertext")
 // LoadMasterKey parses ENCRYPTION_MASTER_KEY: 32 raw bytes encoded as base64 or
 // 64 hex characters.
 func LoadMasterKey(s string) ([]byte, error) {
+	s = strings.TrimSpace(s) // a secret pasted into Secret Manager often ends with a newline
 	if s == "" {
 		return nil, errors.New("ENCRYPTION_MASTER_KEY is empty")
 	}

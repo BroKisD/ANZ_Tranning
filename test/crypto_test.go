@@ -72,3 +72,13 @@ func TestCrypto_LoadMasterKey(t *testing.T) {
 		}
 	}
 }
+
+// A key pasted into Secret Manager (console or `echo`) usually carries a trailing newline.
+func TestCrypto_LoadMasterKey_IgnoresSurroundingWhitespace(t *testing.T) {
+	k := testKey(9)
+	for _, in := range []string{hex.EncodeToString(k) + "\n", " " + hex.EncodeToString(k) + " \r\n", base64.StdEncoding.EncodeToString(k) + "\n"} {
+		if got, err := crypto.LoadMasterKey(in); err != nil || !bytes.Equal(got, k) {
+			t.Fatalf("LoadMasterKey(%q) = %v, %v", in, got, err)
+		}
+	}
+}
