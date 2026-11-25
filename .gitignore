@@ -1,3 +1,5 @@
 /.env
 /anz-training
 /env/
+/docs/
+/scripts/test-server.env

@@ -4,6 +4,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,8 @@ import (
 	"anz-training/helper"
 	"anz-training/model"
 	"anz-training/templates"
+
+	"golang.org/x/crypto/nacl/box"
 )
 
 const (
@@ -176,19 +179,13 @@ func ServiceName(projectName, projectID string) string {
 }
 
 // DeployData is what templates/deploy.yml.tmpl is rendered with. ProjectID is
-// this platform's project id (used in the webhook); GCPProjectID is the user's
-// Google Cloud project.
+// this platform's project id (used in the webhook payload). Everything
+// configurable or secret (GCP settings, webhook URL and secret) is deliberately
+// absent: it lives in the repo's Actions variables and secret (configureActions).
 type DeployData struct {
-	BranchName     string
-	WIFProvider    string
-	ServiceAccount string
-	Region         string
-	GCPProjectID   string
-	ArtifactRepo   string
-	ServiceName    string
-	WebhookURL     string
-	WebhookSecret  string
-	ProjectID      string
+	BranchName  string
+	ServiceName string
+	ProjectID   string
 }
 
 // safeValue limits what may be interpolated into the workflow YAML/shell so a
@@ -197,10 +194,7 @@ var safeValue = regexp.MustCompile(`^[A-Za-z0-9._@:/=?&%+~-]+$`)
 
 func (d DeployData) validate() error {
 	for name, v := range map[string]string{
-		"BranchName": d.BranchName, "WIFProvider": d.WIFProvider, "ServiceAccount": d.ServiceAccount,
-		"Region": d.Region, "GCPProjectID": d.GCPProjectID, "ArtifactRepo": d.ArtifactRepo,
-		"ServiceName": d.ServiceName, "WebhookURL": d.WebhookURL, "WebhookSecret": d.WebhookSecret,
-		"ProjectID": d.ProjectID,
+		"BranchName": d.BranchName, "ServiceName": d.ServiceName, "ProjectID": d.ProjectID,
 	} {
 		if !safeValue.MatchString(v) {
 			return fmt.Errorf("deploy workflow: invalid %s", name)
@@ -264,15 +258,20 @@ func (g *GitHub) CreateRepo(ctx context.Context, gh model.GitHubCreds, gcp model
 	// so the repo is created without a deploy workflow.
 	var workflow, serviceYAML []byte
 	if gcp.ProjectID != "" {
+		// stored as Actions variables, but still rejected up front if malformed
+		for field, v := range map[string]string{
+			"ProjectID": gcp.ProjectID, "Region": gcp.Region, "ArtifactRepo": gcp.ArtifactRepo,
+			"WIFProvider": gcp.WIFProvider, "ServiceAccount": gcp.ServiceAccount,
+		} {
+			if !safeValue.MatchString(v) {
+				return "", fmt.Errorf("deploy config: invalid %s", field)
+			}
+		}
 		var err error
 		if serviceYAML, err = RenderServiceYAML(ServiceData{ServiceName: name, RuntimeServiceAccount: gcp.RuntimeServiceAccount}); err != nil {
 			return "", err
 		}
-		workflow, err = RenderDeployWorkflow(DeployData{
-			BranchName: defaultBase, WIFProvider: gcp.WIFProvider, ServiceAccount: gcp.ServiceAccount,
-			Region: gcp.Region, GCPProjectID: gcp.ProjectID, ArtifactRepo: gcp.ArtifactRepo,
-			ServiceName: name, WebhookURL: g.webhookURL, WebhookSecret: helper.WebhookSecretFor(g.webhookSecret, projectID), ProjectID: projectID,
-		})
+		workflow, err = RenderDeployWorkflow(DeployData{BranchName: defaultBase, ServiceName: name, ProjectID: projectID})
 		if err != nil {
 			return "", err
 		}
@@ -307,6 +306,10 @@ func (g *GitHub) CreateRepo(ctx context.Context, gh model.GitHubCreds, gcp model
 	if workflow == nil {
 		return repo.HTMLURL, nil
 	}
+	// the workflow reads its settings from here, so they exist before it is committed
+	if err := g.configureActions(ctx, token, gh.Owner, name, gcp, helper.WebhookSecretFor(g.webhookSecret, projectID)); err != nil {
+		return "", fmt.Errorf("configure actions: %w", err)
+	}
 	// [skip ci]: creating the repo must not start a deploy of an empty repo.
 	if err := g.putFile(ctx, token, gh.Owner, name, workflowPath, "ci: add Cloud Run deploy workflow [skip ci]", workflow); err != nil {
 		return "", fmt.Errorf("commit workflow: %w", err)
@@ -315,6 +318,51 @@ func (g *GitHub) CreateRepo(ctx context.Context, gh model.GitHubCreds, gcp model
 		return "", fmt.Errorf("commit service.yml: %w", err)
 	}
 	return repo.HTMLURL, nil
+}
+
+// configureActions stores the deploy settings as repo Actions variables and the
+// webhook secret as an encrypted Actions secret, so neither is committed.
+func (g *GitHub) configureActions(ctx context.Context, token, owner, repo string, gcp model.GCPCreds, webhookSecret string) error {
+	base := fmt.Sprintf("/repos/%s/%s/actions", url.PathEscape(owner), url.PathEscape(repo))
+	vars := []struct{ name, value string }{
+		{"GCP_PROJECT_ID", gcp.ProjectID}, {"GCP_REGION", gcp.Region}, {"GCP_ARTIFACT_REPO", gcp.ArtifactRepo},
+		{"GCP_WIF_PROVIDER", gcp.WIFProvider}, {"GCP_SERVICE_ACCOUNT", gcp.ServiceAccount},
+	}
+	if g.webhookURL != "" { // no webhook: the platform follows the run through the GitHub API
+		vars = append(vars, struct{ name, value string }{"WEBHOOK_URL", g.webhookURL})
+	}
+	for _, v := range vars {
+		if err := g.api(ctx, http.MethodPost, base+"/variables", token, map[string]string{"name": v.name, "value": v.value}, nil); err != nil {
+			return fmt.Errorf("variable %s: %w", v.name, err)
+		}
+	}
+
+	if g.webhookURL == "" || webhookSecret == "" {
+		return nil
+	}
+	var pk struct {
+		KeyID string `json:"key_id"`
+		Key   string `json:"key"`
+	}
+	if err := g.api(ctx, http.MethodGet, base+"/secrets/public-key", token, nil, &pk); err != nil {
+		return fmt.Errorf("secret public key: %w", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(pk.Key)
+	if err != nil || len(raw) != 32 {
+		return errors.New("secret public key: malformed")
+	}
+	var pub [32]byte
+	copy(pub[:], raw)
+	sealed, err := box.SealAnonymous(nil, []byte(webhookSecret), &pub, rand.Reader) // libsodium crypto_box_seal
+	if err != nil {
+		return fmt.Errorf("encrypt secret: %w", err)
+	}
+	if err := g.api(ctx, http.MethodPut, base+"/secrets/WEBHOOK_SECRET", token, map[string]string{
+		"encrypted_value": base64.StdEncoding.EncodeToString(sealed), "key_id": pk.KeyID,
+	}, nil); err != nil {
+		return fmt.Errorf("secret WEBHOOK_SECRET: %w", err)
+	}
+	return nil
 }
 
 // putFile commits one file to the default branch through the contents API.
@@ -558,4 +606,96 @@ func (g *GitHub) DispatchWorkflow(ctx context.Context, gh model.GitHubCreds, rep
 		return fmt.Errorf("dispatch workflow: %w", err)
 	}
 	return nil
+}
+
+// ---------- DeployRun ----------
+
+// deployStages maps the deploy workflow's step names to the stages the platform reports.
+var deployStages = []struct{ name, stage, step string }{
+	{"Build", "build", model.StepBuilding},
+	{"Test", "test", model.StepTesting},
+	{"Deploy", "deploy", model.StepDeploying},
+}
+
+// liveURLAnnotation is the title of the notice the deploy workflow prints with the service URL.
+const liveURLAnnotation = "live_url"
+
+// DeployRun reads the newest run of the deploy workflow created at or after
+// since: how far it got, whether it finished and, on success, the live URL the
+// workflow published as an annotation. A missing run is Found == false.
+func (g *GitHub) DeployRun(ctx context.Context, gh model.GitHubCreds, repoURL string, since time.Time) (DeployRun, error) {
+	owner, name, err := repoFor(gh, repoURL)
+	if err != nil {
+		return DeployRun{}, err
+	}
+	token, err := tokenFor(gh)
+	if err != nil {
+		return DeployRun{}, err
+	}
+	base := fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
+
+	var runs struct {
+		WorkflowRuns []struct {
+			ID         int64     `json:"id"`
+			Status     string    `json:"status"`
+			Conclusion string    `json:"conclusion"`
+			CreatedAt  time.Time `json:"created_at"`
+		} `json:"workflow_runs"`
+	}
+	if err := g.api(ctx, http.MethodGet, base+"/actions/workflows/"+deployWorkflowFile+"/runs?per_page=10", token, nil, &runs); err != nil {
+		return DeployRun{}, fmt.Errorf("list deploy runs: %w", err)
+	}
+	for _, r := range runs.WorkflowRuns { // newest first
+		if r.CreatedAt.Before(since) {
+			continue
+		}
+		out := DeployRun{Found: true, CreatedAt: r.CreatedAt, Done: r.Status == "completed", Conclusion: r.Conclusion}
+
+		var jobs struct {
+			Jobs []struct {
+				ID    int64 `json:"id"`
+				Steps []struct {
+					Name       string `json:"name"`
+					Status     string `json:"status"`
+					Conclusion string `json:"conclusion"`
+				} `json:"steps"`
+			} `json:"jobs"`
+		}
+		if err := g.api(ctx, http.MethodGet, fmt.Sprintf("%s/actions/runs/%d/jobs", base, r.ID), token, nil, &jobs); err != nil {
+			return DeployRun{}, fmt.Errorf("list deploy jobs: %w", err)
+		}
+		if len(jobs.Jobs) == 0 {
+			return out, nil
+		}
+		job := jobs.Jobs[0]
+		for _, st := range job.Steps {
+			for _, d := range deployStages {
+				if st.Name != d.name {
+					continue
+				}
+				if st.Status == "in_progress" || (st.Status == "completed" && st.Conclusion != "skipped") {
+					out.Step = d.step
+				}
+				if st.Conclusion == "failure" {
+					out.FailedStage = d.stage
+				}
+			}
+		}
+		if out.Done && out.Conclusion == "success" {
+			var notes []struct {
+				Title   string `json:"title"`
+				Message string `json:"message"`
+			}
+			if err := g.api(ctx, http.MethodGet, fmt.Sprintf("%s/check-runs/%d/annotations", base, job.ID), token, nil, &notes); err != nil {
+				return DeployRun{}, fmt.Errorf("read deploy annotations: %w", err)
+			}
+			for _, n := range notes {
+				if n.Title == liveURLAnnotation {
+					out.LiveURL = strings.TrimSpace(n.Message)
+				}
+			}
+		}
+		return out, nil
+	}
+	return DeployRun{}, nil
 }

@@ -28,6 +28,9 @@ const (
 	defaultStageTimeout    = 5 * time.Minute
 	defaultMaxGenerations  = 2
 	maxErrorMessageLen     = 1000
+	// runClockSkew widens "runs created since" so a small difference between
+	// this server's clock and GitHub's cannot hide the run that was just started.
+	runClockSkew = 10 * time.Second
 )
 
 // Collaborators of the orchestrator, as interfaces so the state machine can be
@@ -77,6 +80,11 @@ type OrchestratorConfig struct {
 	// and the deploy workflow's webhook - not the orchestrator - finishes the
 	// project after the merge. Ignored when RepoOnly is set.
 	Deployer Deployer
+	// RunWatcher, when set, makes the platform follow each deploy run on GitHub
+	// (a DeployMonitor) instead of waiting for the workflow's webhook. Use it
+	// when GitHub cannot call the platform.
+	RunWatcher RunWatcher
+	Monitor    DeployMonitorConfig
 }
 
 // Orchestrator runs each project as a goroutine state machine and holds the
@@ -95,7 +103,8 @@ type Orchestrator struct {
 	secrets      SecretReader // may be nil: BYOK projects then fail
 	cfg          OrchestratorConfig
 
-	genSem chan struct{}
+	genSem  chan struct{}
+	monitor *DeployMonitor // nil: the webhook finishes deploys
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -117,8 +126,13 @@ func NewOrchestrator(store ProjectStore, integrations IntegrationReader, gh Repo
 		cfg.MaxConcurrentGenerations = defaultMaxGenerations
 	}
 	base, cancel := context.WithCancel(context.Background())
+	var monitor *DeployMonitor
+	if cfg.RunWatcher != nil {
+		monitor = NewDeployMonitor(store, cfg.RunWatcher, cfg.Monitor)
+	}
 	return &Orchestrator{
-		store: store, integrations: integrations, github: gh, gen: gen, secrets: secrets, cfg: cfg,
+		monitor: monitor,
+		store:   store, integrations: integrations, github: gh, gen: gen, secrets: secrets, cfg: cfg,
 		genSem: make(chan struct{}, cfg.MaxConcurrentGenerations),
 		base:   base, cancel: cancel,
 		running: map[string]bool{}, approvalChans: map[string]chan struct{}{},
@@ -295,6 +309,7 @@ func (o *Orchestrator) run(ctx context.Context, id string) error {
 	}); err != nil {
 		return err
 	}
+	mergeAt := time.Now().Add(-runClockSkew)
 	if _, err := stage(ctx, o.cfg.StageTimeout, func(c context.Context) (struct{}, error) {
 		return struct{}{}, o.github.MergePR(c, gh, repoURL, prURL)
 	}); err != nil {
@@ -309,6 +324,11 @@ func (o *Orchestrator) run(ctx context.Context, id string) error {
 	}
 	if o.cfg.Demo && deployer == nil { // nothing to deploy: merged is the end
 		return o.store.UpdateProject(ctx, id, map[string]any{"status": model.StatusSuccess})
+	}
+	if o.monitor != nil && deployer != nil {
+		// no webhook: follow the deploy run on GitHub until it ends
+		o.monitor.Watch(ctx, id, gh, repoURL, mergeAt)
+		return nil
 	}
 	// Otherwise the deploy workflow reports progress and the result through the
 	// webhook, which only ever moves current_step forward.
@@ -436,6 +456,7 @@ func (o *Orchestrator) Redeploy(ctx context.Context, projectID, ownerID string) 
 		return ErrNotRedeployable
 	}
 	var gh model.GitHubCreds
+	triggeredAt := time.Now().Add(-runClockSkew)
 	err = o.loadIntegration(ctx, p.OwnerID, model.ProviderGitHub, &gh)
 	if err == nil {
 		_, err = stage(ctx, o.cfg.StageTimeout, func(c context.Context) (struct{}, error) {
@@ -445,6 +466,13 @@ func (o *Orchestrator) Redeploy(ctx context.Context, projectID, ownerID string) 
 	if err != nil {
 		o.fail(projectID, fmt.Errorf("trigger deployment: %w", err))
 		return err
+	}
+	if o.monitor != nil {
+		o.wg.Add(1)
+		go func() {
+			defer o.wg.Done()
+			o.monitor.Watch(o.base, projectID, gh, p.RepoURL, triggeredAt)
+		}()
 	}
 	return nil
 }

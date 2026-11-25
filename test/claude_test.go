@@ -217,7 +217,7 @@ func TestClaude_UnknownStackIsFedBack(t *testing.T) {
 func TestClaude_SandboxEnvAndBYOK(t *testing.T) {
 	t.Setenv("ENCRYPTION_MASTER_KEY", "SERVER_MASTER_KEY_VALUE")
 	t.Setenv("DB_PASSWORD", "SERVER_DB_PASSWORD")
-	t.Setenv("GITHUB_APP_PRIVATE_KEY", "SERVER_GH_KEY")
+	t.Setenv("GITHUB_TOKEN", "SERVER_GH_KEY")
 	t.Setenv("ANTHROPIC_API_KEY", "ambient-key")
 
 	// project whose test fails and prints the API key it sees

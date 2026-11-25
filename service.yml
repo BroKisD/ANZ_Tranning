@@ -11,8 +11,6 @@ spec:
       annotations:
         autoscaling.knative.dev/minScale: "1"
         autoscaling.knative.dev/maxScale: "1"
-        # background runs and the in-memory approval wait need CPU outside requests
-        run.googleapis.com/cpu-throttling: "false"
         run.googleapis.com/cloudsql-instances: project-9991dcfb-85ec-4182-b68:asia-southeast1:anz-trainning
     spec:
       containerConcurrency: 80
@@ -56,32 +54,4 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: API_KEY
-                  key: latest
-            - name: ENCRYPTION_MASTER_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ENCRYPTION_MASTER_KEY
-                  key: latest
-            # --- deploy mode: apps are deployed to this project's Cloud Run ---
-            - name: GCP_PROJECT_ID
-              value: project-9991dcfb-85ec-4182-b68
-            - name: GCP_REGION
-              value: asia-southeast1
-            - name: GCP_ARTIFACT_REPO
-              value: anz-repo
-            # the existing CI/CD identity: apps are deployed with it (no GCP setup by the platform)
-            - name: GCP_WIF_PROVIDER
-              value: projects/386127327935/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-            - name: GCP_SERVICE_ACCOUNT
-              value: anz-trainning@project-9991dcfb-85ec-4182-b68.iam.gserviceaccount.com
-            # the "generated" app is a clone of this very repo
-            - name: DEMO_TEMPLATE_REPO
-              value: https://github.com/BroKisD/ANZ_Tranning
-            # deterministic Cloud Run URL: https://<service>-<project number>.<region>.run.app
-            - name: WEBHOOK_URL
-              value: https://anz-training-service-386127327935.asia-southeast1.run.app/api/webhooks/github
-            - name: WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: WEBHOOK_SECRET
                   key: latest

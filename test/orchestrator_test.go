@@ -844,3 +844,44 @@ func TestOrchestrator_Deploy_MergeFailureIsNotRedeployable(t *testing.T) {
 		t.Fatal("workflow was triggered for a project that never merged")
 	}
 }
+
+// ---- deploy mode without a webhook: the monitor follows the run on GitHub ----
+
+func newPollingOrc(t *testing.T, fd *fakeDeployer, w service.RunWatcher) *orcEnv {
+	t.Helper()
+	e := newOrc(t, nil, func(c *service.OrchestratorConfig) {
+		c.Deployer = fd
+		c.RunWatcher = w
+		c.Monitor = service.DeployMonitorConfig{Poll: time.Millisecond, StartTimeout: time.Second, Timeout: 5 * time.Second}
+	})
+	fd.rec = e.host.rec
+	delete(e.ints.rows, "u1|gcp")
+	return e
+}
+
+var okRun = service.DeployRun{Found: true, CreatedAt: time.Now(), Done: true, Conclusion: "success", Step: model.StepDeploying, LiveURL: "https://x-1.a.run.app"}
+
+func TestOrchestrator_Polling_FinishesProjectAfterMerge(t *testing.T) {
+	e := newPollingOrc(t, &fakeDeployer{creds: gcpCreds}, &scriptedWatcher{results: []service.DeployRun{{}, okRun}})
+	done := e.runAsync(context.Background(), "p1")
+	e.waitStatus("p1", model.StatusWaitingForApproval)
+	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	finish(t, done)
+	if p := e.store.get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x-1.a.run.app" {
+		t.Fatalf("project = %+v", p)
+	}
+}
+
+func TestOrchestrator_Polling_RedeployFollowsTheNewRun(t *testing.T) {
+	e := newPollingOrc(t, &fakeDeployer{}, &scriptedWatcher{results: []service.DeployRun{okRun}})
+	addDeployed(e, "r1", "u1", model.StatusFailed, model.StepTesting)
+	if err := e.o.Redeploy(context.Background(), "r1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStatus("r1", model.StatusSuccess)
+	if p := e.store.get("r1"); p.LiveURL != "https://x-1.a.run.app" || p.ErrorMessage != "" {
+		t.Fatalf("project = %+v", p)
+	}
+}

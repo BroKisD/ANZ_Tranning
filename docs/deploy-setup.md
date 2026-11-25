@@ -21,7 +21,12 @@ each GitHub Actions step (mock build, docker build + push, mock tests, Cloud Run
 `DEMO_TEMPLATE_REPO`, `LIVE_OWNER`.
 
 The GitHub token needs the **`repo` and `workflow`** scopes (`workflow` is needed to commit the deploy
-workflow into the new repo).
+workflow into the new repo). A classic `repo` token already covers writing the repo's Actions variables
+and secret; a fine-grained token needs **Variables: read/write** and **Secrets: read/write** as well.
+
+The deploy workflow holds no settings: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPO`,
+`GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT` and `WEBHOOK_URL` are written to each new repo as Actions
+variables, and the per-project webhook secret as the encrypted Actions secret `WEBHOOK_SECRET`.
 
 ## One-time: let the existing identity trust the new repos
 
@@ -72,6 +77,35 @@ stops after the repo is created.
 **Why `service.yml` pins one instance with CPU always on:** each project runs in a background goroutine and the
 approval wait lives in memory, so default Cloud Run settings (CPU only during requests, several instances)
 would freeze runs and lose approvals. It costs one idle instance.
+
+## Platform settings come from GitHub Actions secrets
+
+Nothing is set by hand on the Cloud Run service. Add these **Actions secrets** to the platform's repo
+(Settings -> Secrets and variables -> Actions); on every push to `main`, `ci-cd.yml` runs
+`scripts/render-service.py`, which adds them to `service.yml` (on the runner only) before
+`gcloud run services replace`:
+
+| Secret | Value |
+|---|---|
+| `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPO` | the project, region and Artifact Registry repo |
+| `GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT` | the Workload Identity provider and service account the apps deploy with |
+
+`ENCRYPTION_MASTER_KEY` is read from **Secret Manager**, like `API_KEY` and the DB secrets: create a secret named
+`ENCRYPTION_MASTER_KEY` (64 hex characters, `openssl rand -hex 32`; console works) and let the runtime service account
+read it (`Secret Manager Secret Accessor`). Keep the value: changing it makes stored GitHub tokens unreadable.
+
+`DEMO_TEMPLATE_REPO` is the repo itself (`github.context.repository`). The step fails with the list of missing
+secrets if one is absent. It also pins one always-on instance (min = max = 1, CPU not throttled).
+
+## No webhook: the platform follows the run on GitHub
+
+If GitHub cannot call the platform (or you just don't want the webhook), leave **both** `WEBHOOK_URL` and
+`WEBHOOK_SECRET` unset in deploy mode. The platform then polls the repo's deploy run through the GitHub API (every
+5 s) and moves `current_step` through `building -> testing -> deploying`, then `success` with `live_url` (read from
+a `live_url` notice the workflow prints) or `failed` with the stage that failed. New repos get no webhook variable
+or secret. The platform only needs outbound access to `api.github.com`; the token needs the `repo` scope (which
+covers reading Actions runs). `ENCRYPTION_MASTER_KEY` is still required: it encrypts the stored GitHub tokens.
+Setting only one of the two webhook values is an error.
 
 ## Use it (API)
 

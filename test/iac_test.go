@@ -1,25 +1,16 @@
 package test
 
 import (
-	"context"
-	"encoding/base64"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
-
 	"anz-training/service"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func deployData() service.DeployData {
-	return service.DeployData{
-		BranchName: "main", WIFProvider: gcpCreds.WIFProvider, ServiceAccount: gcpCreds.ServiceAccount,
-		Region: "asia-southeast1", GCPProjectID: "my-proj", ArtifactRepo: "ai-apps", ServiceName: "svc-1",
-		WebhookURL: "https://b.example.com/hook", WebhookSecret: "sec", ProjectID: "proj-uuid",
-	}
+	return service.DeployData{BranchName: "main", ServiceName: "svc-1", ProjectID: "proj-uuid"}
 }
 
 func TestRenderDeployWorkflow_Stages(t *testing.T) {
@@ -133,67 +124,24 @@ func TestRenderServiceYAML(t *testing.T) {
 	}
 }
 
-func TestGitHub_CreateRepo_CommitsIaC(t *testing.T) {
-	f := newFakeGitHub(t)
-	g := newGH(t, f, "")
-	creds := gcpCreds
-	creds.RuntimeServiceAccount = runtimeSA
-	if _, err := g.CreateRepo(context.Background(), ghCreds, creds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
+func TestRenderDeployWorkflow_PollingSupport(t *testing.T) {
+	out, err := service.RenderDeployWorkflow(deployData())
+	if err != nil {
 		t.Fatal(err)
 	}
-	wf := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/.github/workflows/deploy.yml"]
-	sv := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/service.yml"]
-	if wf == nil || sv == nil {
-		t.Fatalf("both files must be committed, calls: %v", f.calls)
+	s := string(out)
+	// the platform reads the live URL from the run's annotations
+	if !strings.Contains(s, "::notice title=live_url::${{ steps.deploy.outputs.url }}") {
+		t.Error("workflow must publish the service URL as a live_url notice")
 	}
-	for name, put := range map[string]map[string]any{"workflow": wf, "service.yml": sv} {
-		if msg, _ := put["message"].(string); !strings.HasSuffix(msg, "[skip ci]") {
-			t.Errorf("%s commit message %q must end with [skip ci]", name, msg)
+	// without a webhook configured the notifier does nothing
+	if !strings.Contains(s, `[ -n "$WEBHOOK_URL" ] || return 0`) {
+		t.Error("notify must be a no-op when WEBHOOK_URL is empty")
+	}
+	// the polled stage names are the step names GitHub reports
+	for _, name := range []string{"name: Build", "name: Test", "name: Deploy"} {
+		if !strings.Contains(s, name) {
+			t.Errorf("workflow missing step %q", name)
 		}
-	}
-	raw, _ := base64.StdEncoding.DecodeString(sv["content"].(string))
-	if !strings.Contains(string(raw), "name: my-app-1234abcd") || !strings.Contains(string(raw), "serviceAccountName: "+runtimeSA) {
-		t.Fatalf("service.yml content:\n%s", raw)
-	}
-
-	// no GCP config (repo-only / demo): no deploy files
-	f2 := newFakeGitHub(t)
-	if _, err := newGH(t, f2, "").CreateRepo(context.Background(), ghCreds, gcpEmpty, "id-1", "x"); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range f2.calls {
-		if strings.HasPrefix(c, "PUT ") {
-			t.Fatalf("no files expected without GCP config, got %s", c)
-		}
-	}
-}
-
-func TestGitHub_PushAndOpenPR_RestoresServiceYML(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-	root := t.TempDir()
-	bare := filepath.Join(root, "acme", "repo.git")
-	if err := os.MkdirAll(bare, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, bare, "init", "-q", "--bare", "--initial-branch=main")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-q", "--initial-branch=main")
-	write(t, filepath.Join(seed, "README.md"), "# repo\n")
-	write(t, filepath.Join(seed, "service.yml"), "TRUSTED\n")
-	gitCmd(t, seed, "add", "-A")
-	gitCmd(t, seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
-	gitCmd(t, seed, "push", "-q", bare, "main")
-
-	ws := t.TempDir()
-	write(t, filepath.Join(ws, "main.go"), "package main\n")
-	write(t, filepath.Join(ws, "service.yml"), "EVIL: expose everything\n") // generated code must not change IaC
-	g := newGH(t, newFakeGitHub(t), "file://"+root)
-	if _, err := g.PushAndOpenPR(context.Background(), ws, ghCreds, "https://github.com/acme/repo", "main"); err != nil {
-		t.Fatal(err)
-	}
-	if got := gitCmd(t, bare, "show", "feature/ai-gen:service.yml"); strings.TrimSpace(got) != "TRUSTED" {
-		t.Fatalf("service.yml on the PR branch = %q", got)
 	}
 }

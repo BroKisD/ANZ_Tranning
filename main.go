@@ -106,8 +106,15 @@ func serve() {
 		log.Printf("DEMO: generated code is a clone of %s, tests are mocked, nothing is deployed", templateRepo)
 	}
 	webhookOn := !repoOnly && !demo // deploy workflows report back through the webhook
+	// Deploy mode with neither WEBHOOK_URL nor WEBHOOK_SECRET: no webhook; the platform
+	// follows each deploy run through the GitHub API instead (it only needs to reach GitHub).
+	pollDeploys := deploy && os.Getenv("WEBHOOK_URL") == "" && os.Getenv("WEBHOOK_SECRET") == ""
+	if pollDeploys {
+		webhookOn = false
+		log.Print("DEPLOY: no webhook configured; deploy runs are followed through the GitHub API")
+	}
 	if webhookOn && (os.Getenv("WEBHOOK_SECRET") == "" || os.Getenv("WEBHOOK_URL") == "") {
-		log.Fatal("WEBHOOK_URL and WEBHOOK_SECRET are required unless REPO_ONLY=true or only DEMO_TEMPLATE_REPO is set")
+		log.Fatal("WEBHOOK_URL and WEBHOOK_SECRET are required unless REPO_ONLY=true or only DEMO_TEMPLATE_REPO is set (deploy mode may leave both unset)")
 	}
 	// every GitHub call uses the user's own PAT (stored encrypted per user)
 	gh := service.NewGitHub(service.GitHubConfig{
@@ -160,8 +167,12 @@ func serve() {
 		}
 		gen = dg
 	}
-	orch := service.NewOrchestrator(store, store, gh, gen, secretReader,
-		service.OrchestratorConfig{MasterKey: masterKey, RepoOnly: repoOnly, Demo: demo, Deployer: deployer})
+	orchCfg := service.OrchestratorConfig{MasterKey: masterKey, RepoOnly: repoOnly, Demo: demo, Deployer: deployer}
+	if pollDeploys {
+		orchCfg.RunWatcher = gh
+		orchCfg.Monitor = service.DeployMonitorConfig{Timeout: deployTimeout}
+	}
+	orch := service.NewOrchestrator(store, store, gh, gen, secretReader, orchCfg)
 	ph := handler.NewProjectHandler(store, orch, handler.HeaderUserID)
 	ph.NoGCP = noUserGCP
 	mux.HandleFunc("POST /api/projects", api(ph.Create))

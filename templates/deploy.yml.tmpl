@@ -16,31 +16,39 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # configuration lives in the repo's Actions variables and secret, set when the repo is created
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_ARTIFACT_REPO: ${{ vars.GCP_ARTIFACT_REPO }}
+      WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
     steps:
-      # reports each stage to the platform; a webhook problem never fails the deploy
+      # reports each stage to the platform when a webhook is configured (otherwise the platform reads this run from GitHub); a webhook problem never fails the deploy
       - name: Prepare notifier
         run: |
           cat > "$RUNNER_TEMP/notify.sh" <<'NOTIFY_END'
           notify() {
-            curl -sS --fail-with-body --max-time 30 --retry 3 -X POST "[[ .WebhookURL ]]" -H "Content-Type: application/json" -H "X-Webhook-Secret: [[ .WebhookSecret ]]" -d "$1" || echo "warning: webhook notification failed (ignored)"
+            [ -n "$WEBHOOK_URL" ] || return 0
+            curl -sS --fail-with-body --max-time 30 --retry 3 -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" -H "X-Webhook-Secret: $WEBHOOK_SECRET" -d "$1" || echo "warning: webhook notification failed (ignored)"
           }
           NOTIFY_END
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: '[[ .WIFProvider ]]'
-          service_account: '[[ .ServiceAccount ]]'
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: '[[ .GCPProjectID ]]'
-      - run: gcloud auth configure-docker [[ .Region ]]-docker.pkg.dev --quiet
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
       - id: build
         name: Build
         run: |
           . "$RUNNER_TEMP/notify.sh"
           notify '{"project_id":"[[ .ProjectID ]]","step":"building"}'
           echo "mock build: compiling sources"; sleep 3
-          IMAGE="[[ .Region ]]-docker.pkg.dev/[[ .GCPProjectID ]]/[[ .ArtifactRepo ]]/[[ .ServiceName ]]:${{ github.sha }}"
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPO}/[[ .ServiceName ]]:${{ github.sha }}"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
@@ -56,13 +64,15 @@ jobs:
           . "$RUNNER_TEMP/notify.sh"
           notify '{"project_id":"[[ .ProjectID ]]","step":"deploying"}'
           sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|" service.yml
-          gcloud run services replace service.yml --project [[ .GCPProjectID ]] --region [[ .Region ]]
-          URL="$(gcloud run services describe [[ .ServiceName ]] --project [[ .GCPProjectID ]] --region [[ .Region ]] --format='value(status.url)')"
+          gcloud run services replace service.yml --project "$GCP_PROJECT_ID" --region "$GCP_REGION"
+          URL="$(gcloud run services describe [[ .ServiceName ]] --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')"
           [ -n "$URL" ] || { echo "Cloud Run returned no service URL"; exit 1; }
           echo "url=$URL" >> "$GITHUB_OUTPUT"
       - if: success()
         run: |
           . "$RUNNER_TEMP/notify.sh"
+          # the platform reads the URL from this notice when it follows the run on GitHub
+          echo "::notice title=live_url::${{ steps.deploy.outputs.url }}"
           notify '{"project_id":"[[ .ProjectID ]]","status":"success","live_url":"${{ steps.deploy.outputs.url }}"}'
       - if: failure()
         run: |

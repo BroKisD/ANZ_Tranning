@@ -75,8 +75,17 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           IMAGE_BASE: asia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/anz-repo/anz-training
+          # deploy-mode settings come from this repo's Actions secrets, not from the Cloud Run console
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          GCP_ARTIFACT_REPO: ${{ secrets.GCP_ARTIFACT_REPO }}
+          GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          DEMO_TEMPLATE_REPO: https://github.com/${{ github.repository }}
         run: |
           sed -i "s|image:.*|image: $IMAGE_BASE:${{ github.sha }}|g" service.yml
+          pip install --quiet pyyaml
+          python3 scripts/render-service.py service.yml
           gcloud run services replace service.yml --region asia-southeast1 --dry-run
 
       - name: Deploy to Cloud Run

@@ -179,7 +179,7 @@ func buildPrompt(userPrompt, failure string) string {
 }
 
 // sandboxEnv is a scrubbed environment: the server's own secrets (DB password,
-// master key, GitHub App key, ...) must never reach generated code.
+// master key, GitHub tokens, ...) must never reach generated code.
 func (c *Claude) sandboxEnv(home, apiKey string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
