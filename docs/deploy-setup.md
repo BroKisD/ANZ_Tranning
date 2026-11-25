@@ -78,17 +78,21 @@ stops after the repo is created.
 approval wait lives in memory, so default Cloud Run settings (CPU only during requests, several instances)
 would freeze runs and lose approvals. It costs one idle instance.
 
-## Platform settings come from GitHub Actions secrets
+## Platform settings are derived in CI
 
-Nothing is set by hand on the Cloud Run service. Add these **Actions secrets** to the platform's repo
-(Settings -> Secrets and variables -> Actions); on every push to `main`, `ci-cd.yml` runs
-`scripts/render-service.py`, which adds them to `service.yml` (on the runner only) before
-`gcloud run services replace`:
+Nothing is set by hand on the Cloud Run service and no extra secrets are needed. On every push to `main`,
+`ci-cd.yml` runs `scripts/render-service.py`, which adds the deploy-mode settings to `service.yml` (on the runner
+only) before `gcloud run services replace`. The values come from what the workflow already uses:
 
-| Secret | Value |
+| Setting | Source |
 |---|---|
-| `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_ARTIFACT_REPO` | the project, region and Artifact Registry repo |
-| `GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT` | the Workload Identity provider and service account the apps deploy with |
+| `GCP_PROJECT_ID` | the `GCP_PROJECT_ID` secret |
+| `GCP_REGION`, `GCP_ARTIFACT_REPO` | `asia-southeast1` and `anz-repo`, set in the workflow (change them there) |
+| `GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT` | the existing `WIF_PROVIDER` and `WIF_SERVICE_ACCOUNT` secrets |
+| `DEMO_TEMPLATE_REPO` | this repo's own URL |
+
+It also pins one always-on instance (min = max = 1, CPU not throttled). The step fails with the list of missing
+values if one is empty.
 
 `ENCRYPTION_MASTER_KEY` is read from **Secret Manager**, like `API_KEY` and the DB secrets: create a secret named
 `ENCRYPTION_MASTER_KEY` (64 hex characters, `openssl rand -hex 32`; console works) and let the runtime service account
