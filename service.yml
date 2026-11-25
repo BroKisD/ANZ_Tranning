@@ -9,7 +9,7 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/minScale: "0"
         autoscaling.knative.dev/maxScale: "1"
         run.googleapis.com/cloudsql-instances: project-9991dcfb-85ec-4182-b68:asia-southeast1:anz-trainning
     spec:
