@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"anz-training/model"
 	"anz-training/repository"
@@ -136,5 +137,20 @@ func TestStore_Projects_WithMySQL(t *testing.T) {
 	got, _ = store.GetProject(ctx, "p1")
 	if got.RepoURL != "https://github.com/a/b" || got.PRURL != "https://github.com/a/b/pull/1" || got.CurrentStep != model.StepRepoCreated || got.Status != model.StatusGenerating {
 		t.Fatalf("update did not persist: %+v", got)
+	}
+
+	// deploy tracking: a progress event (current_step only) applies while deploying and
+	// refreshes updated_at; the watchdog query finds only quiet deploying projects
+	if err := store.UpdateProject(ctx, "p1", map[string]any{"status": model.StatusDeploying, "current_step": model.StepMerging}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.UpdateProjectIf(ctx, "p1", model.StatusDeploying, map[string]any{"current_step": model.StepBuilding}); err != nil || !ok {
+		t.Fatalf("progress update: ok=%v err=%v", ok, err)
+	}
+	if got, _ := store.ListStaleDeploying(ctx, time.Now().Add(-time.Hour)); len(got) != 0 {
+		t.Fatalf("fresh deploy listed as stale: %+v", got)
+	}
+	if got, _ := store.ListStaleDeploying(ctx, time.Now().Add(time.Hour)); len(got) != 1 || got[0].ID != "p1" {
+		t.Fatalf("quiet deploy not listed: %+v", got)
 	}
 }

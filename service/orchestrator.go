@@ -17,6 +17,8 @@ var (
 	ErrNotWaiting     = errors.New("project is not waiting for approval")
 	ErrNoPendingRun   = errors.New("no pending run for this project")
 	ErrAlreadyRunning = errors.New("project is already running")
+	// ErrNotRedeployable: the project is not in a state a manual deploy can start from.
+	ErrNotRedeployable = errors.New("project cannot be re-deployed")
 
 	errApprovalTimeout = errors.New("approval timed out")
 )
@@ -63,6 +65,18 @@ type OrchestratorConfig struct {
 	ApprovalTimeout          time.Duration // HITL gate timeout (default 24h)
 	StageTimeout             time.Duration // per GitHub stage (default 5m)
 	MaxConcurrentGenerations int           // parallel `claude` jobs (default 2)
+	// RepoOnly stops the run once the repo exists (step 1 demo): only the
+	// GitHub integration is needed, and the project ends as success.
+	RepoOnly bool
+	// Demo runs the full flow without GCP: only the GitHub integration is
+	// needed, no BYOK key is read and nothing is deployed (the project is
+	// success once the approved PR is merged). Pair it with DemoGenerator.
+	Demo bool
+	// Deployer, when set, makes this a deploy-mode run: the platform's own
+	// GCP is prepared for each repo (instead of the user's GCP integration),
+	// and the deploy workflow's webhook - not the orchestrator - finishes the
+	// project after the merge. Ignored when RepoOnly is set.
+	Deployer Deployer
 }
 
 // Orchestrator runs each project as a goroutine state machine and holds the
@@ -179,16 +193,37 @@ func (o *Orchestrator) run(ctx context.Context, id string) error {
 		return fmt.Errorf("load project: %w", err)
 	}
 
-	gh, gcp, err := o.loadCreds(ctx, p.OwnerID)
-	if err != nil {
+	var gh model.GitHubCreds
+	var gcp model.GCPCreds
+	deployer := o.cfg.Deployer
+	if o.cfg.RepoOnly {
+		deployer = nil
+	}
+	noGCP := o.cfg.RepoOnly || o.cfg.Demo || deployer != nil
+	if noGCP {
+		if err := o.loadIntegration(ctx, p.OwnerID, model.ProviderGitHub, &gh); err != nil {
+			return err
+		}
+	} else if gh, gcp, err = o.loadCreds(ctx, p.OwnerID); err != nil {
 		return err
 	}
-	apiKey, err := o.resolveAPIKey(ctx, gcp)
-	if err != nil {
-		return err
+	apiKey := ""
+	if !noGCP {
+		if apiKey, err = o.resolveAPIKey(ctx, gcp); err != nil {
+			return err
+		}
 	}
 
-	// 2. create repo
+	// 2. prepare the deploy target (deploy mode), then create the repo
+	if deployer != nil {
+		name := ServiceName(p.Name, id)
+		gcp, err = stage(ctx, o.cfg.StageTimeout, func(c context.Context) (model.GCPCreds, error) {
+			return deployer.Prepare(c, DeployTarget{ProjectID: id, ServiceName: name, RepoOwner: gh.Owner, RepoName: name})
+		})
+		if err != nil {
+			return fmt.Errorf("prepare deployment: %w", err)
+		}
+	}
 	repoURL, err := stage(ctx, o.cfg.StageTimeout, func(c context.Context) (string, error) {
 		return o.github.CreateRepo(c, gh, gcp, id, p.Name)
 	})
@@ -199,6 +234,9 @@ func (o *Orchestrator) run(ctx context.Context, id string) error {
 		"repo_url": repoURL, "current_step": model.StepRepoCreated,
 	}); err != nil {
 		return err
+	}
+	if o.cfg.RepoOnly {
+		return o.store.UpdateProject(ctx, id, map[string]any{"status": model.StatusSuccess})
 	}
 
 	// 3. generate + test (bounded parallelism: each job is a heavy process tree)
@@ -262,7 +300,19 @@ func (o *Orchestrator) run(ctx context.Context, id string) error {
 	}); err != nil {
 		return fmt.Errorf("merge pull request: %w", err)
 	}
-	return o.store.UpdateProject(ctx, id, map[string]any{"current_step": model.StepDeploying})
+	// Record that the merge happened: only a merged project can be re-deployed. Skipped
+	// when a webhook event already moved the step on (it must never be overwritten).
+	if cur, err := o.store.GetProject(ctx, id); err == nil && cur.Status == model.StatusDeploying && cur.CurrentStep == model.StepMerging {
+		if _, err := o.store.UpdateProjectIf(ctx, id, model.StatusDeploying, map[string]any{"current_step": model.StepMerged}); err != nil {
+			return err
+		}
+	}
+	if o.cfg.Demo && deployer == nil { // nothing to deploy: merged is the end
+		return o.store.UpdateProject(ctx, id, map[string]any{"status": model.StatusSuccess})
+	}
+	// Otherwise the deploy workflow reports progress and the result through the
+	// webhook, which only ever moves current_step forward.
+	return nil
 }
 
 func stage[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
@@ -350,6 +400,51 @@ func (o *Orchestrator) Approve(ctx context.Context, projectID, ownerID string) e
 	select {
 	case ch <- struct{}{}:
 	default: // already approved
+	}
+	return nil
+}
+
+// Redeploy starts a manual deployment of a project that already has code in its
+// repo: it must be success, or failed after the PR was merged (a failed merge
+// leaves nothing to deploy). The project goes
+// back to deploying (the workflow's webhook finishes it again). It reports
+// not-found for projects the caller does not own.
+func (o *Orchestrator) Redeploy(ctx context.Context, projectID, ownerID string) error {
+	if o.cfg.Deployer == nil {
+		return ErrNotRedeployable
+	}
+	p, err := o.store.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if p.OwnerID != ownerID {
+		return model.ErrNotFound
+	}
+	okState := p.Status == model.StatusSuccess ||
+		(p.Status == model.StatusFailed && StepRank(p.CurrentStep) >= StepRank(model.StepMerged))
+	if !okState || p.RepoURL == "" {
+		return ErrNotRedeployable
+	}
+	// compare-and-set: two concurrent requests start only one deployment
+	started, err := o.store.UpdateProjectIf(ctx, projectID, p.Status, map[string]any{
+		"status": model.StatusDeploying, "current_step": model.StepMerged, "error_message": "",
+	})
+	if err != nil {
+		return err
+	}
+	if !started {
+		return ErrNotRedeployable
+	}
+	var gh model.GitHubCreds
+	err = o.loadIntegration(ctx, p.OwnerID, model.ProviderGitHub, &gh)
+	if err == nil {
+		_, err = stage(ctx, o.cfg.StageTimeout, func(c context.Context) (struct{}, error) {
+			return struct{}{}, o.cfg.Deployer.Trigger(c, gh, p.RepoURL)
+		})
+	}
+	if err != nil {
+		o.fail(projectID, fmt.Errorf("trigger deployment: %w", err))
+		return err
 	}
 	return nil
 }

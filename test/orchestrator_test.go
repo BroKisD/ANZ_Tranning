@@ -53,6 +53,8 @@ func (m *memStore) apply(p *model.Project, f map[string]any) {
 			p.RepoURL = s
 		case "pr_url":
 			p.PRURL = s
+		case "live_url":
+			p.LiveURL = s
 		case "error_message":
 			p.ErrorMessage = s
 		}
@@ -91,6 +93,11 @@ func (m *memStore) UpdateProjectIf(_ context.Context, id, from string, f map[str
 	}
 	m.apply(p, f)
 	return true, nil
+}
+
+func (m *memStore) CreateProject(_ context.Context, p *model.Project) error {
+	m.add(*p)
+	return nil
 }
 
 func (m *memStore) get(id string) model.Project {
@@ -137,6 +144,7 @@ type fakeHost struct {
 	createErr, pushErr, mergeEr error
 	pushDir                     string
 	mergeArgs                   []string
+	createGCP                   model.GCPCreds
 }
 
 func (h *fakeHost) rec(s string) { h.mu.Lock(); h.calls = append(h.calls, s); h.mu.Unlock() }
@@ -154,10 +162,13 @@ func (h *fakeHost) count(s string) int {
 
 func (h *fakeHost) CreateRepo(_ context.Context, gh model.GitHubCreds, gcp model.GCPCreds, projectID, name string) (string, error) {
 	h.rec("create")
+	h.mu.Lock()
+	h.createGCP = gcp
+	h.mu.Unlock()
 	if h.createErr != nil {
 		return "", h.createErr
 	}
-	if gh.Owner != "acme" || gcp.ProjectID != "my-proj" {
+	if gh.Owner != "acme" || (gcp.ProjectID != "my-proj" && gcp.ProjectID != "") {
 		return "", errors.New("wrong creds decrypted")
 	}
 	return "https://github.com/acme/" + projectID, nil
@@ -265,7 +276,7 @@ func newOrc(t *testing.T, secrets service.SecretReader, mods ...func(*service.Or
 		gen:   &fakeGen{dir: t.TempDir()},
 		key:   testKey(5),
 	}
-	e.ints.put(t, e.key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", InstallationID: 7})
+	e.ints.put(t, e.key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", Token: "ghp_x"})
 	e.ints.put(t, e.key, "u1", model.ProviderGCP, gcpCreds)
 	e.store.add(model.Project{ID: "p1", OwnerID: "u1", Name: "My App", Prompt: "todo app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
 
@@ -345,7 +356,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 	finish(t, done)
 
 	p = e.store.get("p1")
-	if p.Status != model.StatusDeploying || p.CurrentStep != model.StepDeploying || p.ErrorMessage != "" {
+	if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.ErrorMessage != "" {
 		t.Fatalf("final project: %+v", p)
 	}
 	if got := e.host.mergeArgs; len(got) != 2 || got[0] != p.RepoURL || got[1] != p.PRURL {
@@ -357,7 +368,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 		"generating|tests_passed",
 		"waiting_for_approval|tests_passed",
 		"deploying|merging",
-		"deploying|deploying",
+		"deploying|merged",
 	}
 	if got := e.store.hist(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("state transitions:\n got  %v\n want %v", got, want)
@@ -613,5 +624,223 @@ func TestOrchestrator_AlreadyStartedProjectIsLeftAlone(t *testing.T) {
 	finish(t, e.runAsync(context.Background(), "p9"))
 	if e.host.count("create") != 0 || e.store.get("p9").Status != model.StatusSuccess {
 		t.Fatal("Run touched a project that is not pending")
+	}
+}
+
+// RepoOnly (step 1 demo): only GitHub is needed, the run stops after the repo exists.
+func TestOrchestrator_RepoOnly(t *testing.T) {
+	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.RepoOnly = true })
+	delete(e.ints.rows, "u1|gcp") // no GCP integration at all
+	e.o.Run(context.Background(), "p1")
+
+	p := e.store.get("p1")
+	if p.Status != model.StatusSuccess || p.CurrentStep != model.StepRepoCreated || p.RepoURL == "" {
+		t.Fatalf("got status=%s step=%s repo=%q", p.Status, p.CurrentStep, p.RepoURL)
+	}
+	if len(e.gen.reqs) != 0 {
+		t.Fatal("code generation must not run in repo-only mode")
+	}
+}
+
+// Demo mode: full flow without GCP, ends as success once the approved PR is merged.
+func TestOrchestrator_Demo(t *testing.T) {
+	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.Demo = true })
+	delete(e.ints.rows, "u1|gcp")
+	done := e.runAsync(context.Background(), "p1")
+
+	e.waitStatus("p1", model.StatusWaitingForApproval)
+	if p := e.store.get("p1"); p.PRURL == "" || p.RepoURL == "" || p.CurrentStep != model.StepTestsPassed {
+		t.Fatalf("project at gate: %+v", p)
+	}
+	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	finish(t, done)
+	if p := e.store.get("p1"); p.Status != model.StatusSuccess || p.ErrorMessage != "" {
+		t.Fatalf("final project: %+v", p)
+	}
+	if e.host.count("merge") != 1 {
+		t.Fatal("PR was not merged")
+	}
+}
+
+// ---- deploy mode: a Deployer prepares the target, the webhook finishes the project ----
+
+type fakeDeployer struct {
+	mu      sync.Mutex
+	rec     func(string)
+	targets []service.DeployTarget
+	creds   model.GCPCreds
+	err     error
+
+	triggers   []string // repo URLs passed to Trigger
+	triggerErr error
+}
+
+func (d *fakeDeployer) Prepare(_ context.Context, t service.DeployTarget) (model.GCPCreds, error) {
+	d.rec("prepare")
+	d.mu.Lock()
+	d.targets = append(d.targets, t)
+	d.mu.Unlock()
+	return d.creds, d.err
+}
+
+func (d *fakeDeployer) Trigger(_ context.Context, _ model.GitHubCreds, repoURL string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.triggers = append(d.triggers, repoURL)
+	return d.triggerErr
+}
+
+func newDeployOrc(t *testing.T, fd *fakeDeployer) *orcEnv {
+	t.Helper()
+	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.Deployer = fd })
+	fd.rec = e.host.rec
+	delete(e.ints.rows, "u1|gcp") // the platform's GCP is used, not the user's
+	return e
+}
+
+func TestOrchestrator_Deploy_PreparesBeforeRepo(t *testing.T) {
+	fd := &fakeDeployer{creds: gcpCreds}
+	e := newDeployOrc(t, fd)
+	e.runAsync(context.Background(), "p1")
+	e.waitStatus("p1", model.StatusWaitingForApproval)
+
+	if len(e.host.calls) < 2 || e.host.calls[0] != "prepare" || e.host.calls[1] != "create" {
+		t.Fatalf("call order = %v, want prepare then create", e.host.calls)
+	}
+	if e.host.createGCP != gcpCreds {
+		t.Fatalf("CreateRepo got %+v, want the deployer's creds", e.host.createGCP)
+	}
+	name := service.ServiceName("My App", "p1")
+	if got := fd.targets[0]; got != (service.DeployTarget{ProjectID: "p1", ServiceName: name, RepoOwner: "acme", RepoName: name}) {
+		t.Fatalf("target = %+v", got)
+	}
+	if len(e.gen.reqs) == 0 || e.gen.reqs[0].AnthropicAPIKey != "" {
+		t.Fatalf("generate request = %+v", e.gen.reqs)
+	}
+}
+
+func TestOrchestrator_Deploy_EndsWaitingForWebhook(t *testing.T) {
+	e := newDeployOrc(t, &fakeDeployer{creds: gcpCreds})
+	done := e.runAsync(context.Background(), "p1")
+	e.waitStatus("p1", model.StatusWaitingForApproval)
+	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	finish(t, done)
+	p := e.store.get("p1")
+	if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.LiveURL != "" || p.ErrorMessage != "" {
+		t.Fatalf("after merge: %+v (the webhook, not the orchestrator, must finish a deploy)", p)
+	}
+	if e.host.count("merge") != 1 {
+		t.Fatal("PR was not merged")
+	}
+}
+
+func TestOrchestrator_Deploy_PrepareFailure(t *testing.T) {
+	e := newDeployOrc(t, &fakeDeployer{err: errors.New("iam denied")})
+	e.o.Run(context.Background(), "p1")
+	p := e.store.get("p1")
+	if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "prepare") || !strings.Contains(p.ErrorMessage, "iam denied") {
+		t.Fatalf("project: %+v", p)
+	}
+	if e.host.count("create") != 0 {
+		t.Fatal("repo must not be created when preparing the deployment failed")
+	}
+}
+
+// ---- manual re-deploy ----
+
+func addDeployed(e *orcEnv, id, owner, status, step string) {
+	e.store.add(model.Project{ID: id, OwnerID: owner, Name: "x", Prompt: "x", Status: status, CurrentStep: step,
+		RepoURL: "https://github.com/acme/x", ErrorMessage: "old error"})
+}
+
+func TestOrchestrator_Redeploy_FromSuccessAndFailedAfterMerge(t *testing.T) {
+	for _, tc := range []struct{ status, step string }{
+		{model.StatusSuccess, model.StepDeploying},
+		{model.StatusFailed, model.StepTesting},
+		{model.StatusFailed, model.StepMerged}, // merged, but the workflow never reported
+	} {
+		fd := &fakeDeployer{}
+		e := newDeployOrc(t, fd)
+		addDeployed(e, "r1", "u1", tc.status, tc.step)
+		if err := e.o.Redeploy(context.Background(), "r1", "u1"); err != nil {
+			t.Fatalf("%s/%s: %v", tc.status, tc.step, err)
+		}
+		p := e.store.get("r1")
+		if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.ErrorMessage != "" {
+			t.Fatalf("%s/%s: project %+v", tc.status, tc.step, p)
+		}
+		if len(fd.triggers) != 1 || fd.triggers[0] != "https://github.com/acme/x" {
+			t.Fatalf("triggers = %v", fd.triggers)
+		}
+	}
+}
+
+func TestOrchestrator_Redeploy_Refusals(t *testing.T) {
+	cases := []struct {
+		name, owner, status, step string
+		want                      error
+	}{
+		{"failed before the merge", "u1", model.StatusFailed, model.StepRepoCreated, service.ErrNotRedeployable},
+		{"merge itself failed", "u1", model.StatusFailed, model.StepMerging, service.ErrNotRedeployable},
+		{"already deploying", "u1", model.StatusDeploying, model.StepBuilding, service.ErrNotRedeployable},
+		{"waiting for approval", "u1", model.StatusWaitingForApproval, model.StepTestsPassed, service.ErrNotRedeployable},
+		{"someone else's project", "u2", model.StatusSuccess, model.StepDeploying, model.ErrNotFound},
+	}
+	for _, tc := range cases {
+		fd := &fakeDeployer{}
+		e := newDeployOrc(t, fd)
+		addDeployed(e, "r1", "u1", tc.status, tc.step)
+		before := e.store.get("r1")
+		if err := e.o.Redeploy(context.Background(), "r1", tc.owner); !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
+		}
+		if len(fd.triggers) != 0 || e.store.get("r1") != before {
+			t.Errorf("%s: project changed or trigger called", tc.name)
+		}
+	}
+	// without a Deployer there is nothing to trigger
+	e := newOrc(t, nil)
+	addDeployed(e, "r1", "u1", model.StatusSuccess, model.StepDeploying)
+	if err := e.o.Redeploy(context.Background(), "r1", "u1"); !errors.Is(err, service.ErrNotRedeployable) {
+		t.Errorf("no deployer: %v", err)
+	}
+}
+
+func TestOrchestrator_Redeploy_TriggerFailureMarksFailed(t *testing.T) {
+	fd := &fakeDeployer{triggerErr: errors.New("dispatch refused")}
+	e := newDeployOrc(t, fd)
+	addDeployed(e, "r1", "u1", model.StatusSuccess, model.StepDeploying)
+	if err := e.o.Redeploy(context.Background(), "r1", "u1"); err == nil {
+		t.Fatal("trigger error must be returned")
+	}
+	if p := e.store.get("r1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "dispatch refused") {
+		t.Fatalf("project: %+v", p)
+	}
+}
+
+// A merge that fails leaves nothing deployable: a re-deploy must be refused, not run an empty main.
+func TestOrchestrator_Deploy_MergeFailureIsNotRedeployable(t *testing.T) {
+	fd := &fakeDeployer{creds: gcpCreds}
+	e := newDeployOrc(t, fd)
+	e.host.mergeEr = errors.New("conflict")
+	done := e.runAsync(context.Background(), "p1")
+	e.waitStatus("p1", model.StatusWaitingForApproval)
+	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	finish(t, done)
+	p := e.store.get("p1")
+	if p.Status != model.StatusFailed || p.CurrentStep != model.StepMerging {
+		t.Fatalf("after a failed merge: %+v", p)
+	}
+	if err := e.o.Redeploy(context.Background(), "p1", "u1"); !errors.Is(err, service.ErrNotRedeployable) {
+		t.Fatalf("Redeploy after a failed merge = %v, want ErrNotRedeployable", err)
+	}
+	if len(fd.triggers) != 0 {
+		t.Fatal("workflow was triggered for a project that never merged")
 	}
 }

@@ -4,32 +4,71 @@ on:
     branches: [ "[[ .BranchName ]]" ]
     # committing this workflow itself must not trigger a deploy of an empty repo
     paths-ignore: [ ".github/**" ]
+  workflow_dispatch:
 permissions:
   contents: read
   id-token: write
+# a newer run (re-deploy, or a push during a deploy) cancels the older one, which then reports nothing
+concurrency:
+  group: deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # reports each stage to the platform; a webhook problem never fails the deploy
+      - name: Prepare notifier
+        run: |
+          cat > "$RUNNER_TEMP/notify.sh" <<'NOTIFY_END'
+          notify() {
+            curl -sS --fail-with-body --max-time 30 --retry 3 -X POST "[[ .WebhookURL ]]" -H "Content-Type: application/json" -H "X-Webhook-Secret: [[ .WebhookSecret ]]" -d "$1" || echo "warning: webhook notification failed (ignored)"
+          }
+          NOTIFY_END
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: '[[ .WIFProvider ]]'
           service_account: '[[ .ServiceAccount ]]'
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: '[[ .GCPProjectID ]]'
       - run: gcloud auth configure-docker [[ .Region ]]-docker.pkg.dev --quiet
-      - id: deploy
+      - id: build
+        name: Build
         run: |
+          . "$RUNNER_TEMP/notify.sh"
+          notify '{"project_id":"[[ .ProjectID ]]","step":"building"}'
+          echo "mock build: compiling sources"; sleep 3
           IMAGE="[[ .Region ]]-docker.pkg.dev/[[ .GCPProjectID ]]/[[ .ArtifactRepo ]]/[[ .ServiceName ]]:${{ github.sha }}"
-          docker build -t "$IMAGE" . && docker push "$IMAGE"
-          gcloud run deploy [[ .ServiceName ]] --image "$IMAGE" --region [[ .Region ]] --platform managed --allow-unauthenticated --port 8080
-          echo "url=$(gcloud run services describe [[ .ServiceName ]] --region [[ .Region ]] --format='value(status.url)')" >> $GITHUB_OUTPUT
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - id: test
+        name: Test
+        run: |
+          . "$RUNNER_TEMP/notify.sh"
+          notify '{"project_id":"[[ .ProjectID ]]","step":"testing"}'
+          echo "mock tests: 12 passed"; sleep 3
+      - id: deploy
+        name: Deploy
+        run: |
+          . "$RUNNER_TEMP/notify.sh"
+          notify '{"project_id":"[[ .ProjectID ]]","step":"deploying"}'
+          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|" service.yml
+          gcloud run services replace service.yml --project [[ .GCPProjectID ]] --region [[ .Region ]]
+          URL="$(gcloud run services describe [[ .ServiceName ]] --project [[ .GCPProjectID ]] --region [[ .Region ]] --format='value(status.url)')"
+          [ -n "$URL" ] || { echo "Cloud Run returned no service URL"; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
       - if: success()
         run: |
-          curl -s -X POST "[[ .WebhookURL ]]" -H "Content-Type: application/json" -H "X-Webhook-Secret: [[ .WebhookSecret ]]" \
-            -d '{"project_id":"[[ .ProjectID ]]","status":"success","live_url":"${{ steps.deploy.outputs.url }}"}'
+          . "$RUNNER_TEMP/notify.sh"
+          notify '{"project_id":"[[ .ProjectID ]]","status":"success","live_url":"${{ steps.deploy.outputs.url }}"}'
       - if: failure()
         run: |
-          curl -s -X POST "[[ .WebhookURL ]]" -H "Content-Type: application/json" -H "X-Webhook-Secret: [[ .WebhookSecret ]]" \
-            -d '{"project_id":"[[ .ProjectID ]]","status":"failed","error_message":"Cloud Run deployment failed"}'
+          . "$RUNNER_TEMP/notify.sh"
+          STAGE=setup
+          [ "${{ steps.build.outcome }}" = "failure" ] && STAGE=build
+          [ "${{ steps.test.outcome }}" = "failure" ] && STAGE=test
+          [ "${{ steps.deploy.outcome }}" = "failure" ] && STAGE=deploy
+          notify '{"project_id":"[[ .ProjectID ]]","status":"failed","error_message":"Deployment failed at the '"$STAGE"' stage"}'

@@ -13,7 +13,7 @@ import (
 func testKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
 func TestCrypto_RoundTrip(t *testing.T) {
-	plain := []byte(`{"owner":"acme","installation_id":123}`)
+	plain := []byte(`{"owner":"acme","token":"ghp_x"}`)
 	enc, err := crypto.Encrypt(testKey(1), plain)
 	if err != nil {
 		t.Fatal(err)

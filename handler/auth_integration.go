@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"anz-training/crypto"
@@ -27,9 +26,8 @@ type SecretStore interface {
 	PutSecret(ctx context.Context, secretID, value string) (ref string, err error)
 }
 
-// OwnerResolver looks up the GitHub account that owns an App installation
-// (used when the callback does not carry the owner).
-type OwnerResolver func(ctx context.Context, installationID int64) (string, error)
+// OwnerResolver validates a GitHub token and returns the login it belongs to.
+type OwnerResolver func(ctx context.Context, token string) (string, error)
 
 // UserIDFunc identifies the caller. Real session auth plugs in here.
 type UserIDFunc func(r *http.Request) (string, error)
@@ -49,7 +47,7 @@ type IntegrationHandler struct {
 	secrets SecretStore // may be nil: BYOK then rejected
 	key     []byte
 	userID  UserIDFunc
-	owner   OwnerResolver // may be nil: owner must be supplied
+	owner   OwnerResolver // may be nil: the token is then not verified and owner must be supplied
 }
 
 func NewIntegrationHandler(store IntegrationStore, secrets SecretStore, masterKey []byte, userID UserIDFunc, owner OwnerResolver) *IntegrationHandler {
@@ -70,37 +68,51 @@ func (h *IntegrationHandler) save(ctx context.Context, userID, provider string, 
 	})
 }
 
-// GitHubCallback handles GET /api/integrations/github/callback?installation_id=..[&owner=..]
-// and saves installation_id & owner (provider = 'github'). No token is stored.
-func (h *IntegrationHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
+type githubReq struct {
+	Token string `json:"token"` // Personal Access Token
+	Owner string `json:"owner"` // optional: an organization to create repos in (default: the token's user)
+}
+
+// ConnectGitHub handles POST /api/integrations/github: it verifies the PAT with
+// GitHub and stores it encrypted (provider = 'github'). The token is never returned.
+func (h *IntegrationHandler) ConnectGitHub(w http.ResponseWriter, r *http.Request) {
 	userID, err := h.userID(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	instID, err := strconv.ParseInt(r.URL.Query().Get("installation_id"), 10, 64)
-	if err != nil || instID <= 0 {
-		writeErr(w, http.StatusBadRequest, "valid installation_id required")
+	var req githubReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
-	if h.owner != nil { // GitHub is authoritative; ignore a client-supplied owner
-		if owner, err = h.owner(r.Context(), instID); err != nil {
-			log.Printf("resolve github owner: %v", err)
-			writeErr(w, http.StatusBadGateway, "could not resolve github owner")
+	req.Token, req.Owner = strings.TrimSpace(req.Token), strings.TrimSpace(req.Owner)
+	if req.Token == "" {
+		writeErr(w, http.StatusUnprocessableEntity, "token is required")
+		return
+	}
+	owner := req.Owner
+	if h.owner != nil {
+		login, err := h.owner(r.Context(), req.Token) // also proves the token is valid
+		if err != nil {
+			log.Printf("verify github token: %v", err) // never log the token
+			writeErr(w, http.StatusUnprocessableEntity, "github rejected the token")
 			return
+		}
+		if owner == "" {
+			owner = login
 		}
 	}
 	if owner == "" {
-		writeErr(w, http.StatusBadRequest, "owner required")
+		writeErr(w, http.StatusUnprocessableEntity, "owner is required")
 		return
 	}
-	if err := h.save(r.Context(), userID, model.ProviderGitHub, model.GitHubCreds{Owner: owner, InstallationID: instID}); err != nil {
+	if err := h.save(r.Context(), userID, model.ProviderGitHub, model.GitHubCreds{Owner: owner, Token: req.Token}); err != nil {
 		log.Printf("save github integration: %v", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"provider": model.ProviderGitHub, "configured": true})
+	writeJSON(w, http.StatusOK, map[string]any{"provider": model.ProviderGitHub, "configured": true, "owner": owner})
 }
 
 type gcpReq struct {

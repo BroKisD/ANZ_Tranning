@@ -28,8 +28,8 @@ type UserIntegration struct {
 
 // GitHubCreds is the decrypted payload of provider = 'github'.
 type GitHubCreds struct {
-	Owner          string `json:"owner"`
-	InstallationID int64  `json:"installation_id"`
+	Owner string `json:"owner"`
+	Token string `json:"token"` // Personal Access Token; only stored AES-GCM encrypted
 }
 
 // GCPCreds is the decrypted payload of provider = 'gcp'.
@@ -40,6 +40,8 @@ type GCPCreds struct {
 	WIFProvider        string `json:"wif_provider"`
 	ServiceAccount     string `json:"service_account"`
 	AnthropicSecretRef string `json:"anthropic_secret_ref,omitempty"`
+	// RuntimeServiceAccount is the role-less account deployed apps run as (platform deploy mode).
+	RuntimeServiceAccount string `json:"runtime_service_account,omitempty"`
 }
 
 type Project struct {
@@ -74,5 +76,8 @@ const (
 	StepRepoCreated  = "repo_created"
 	StepTestsPassed  = "tests_passed"
 	StepMerging      = "merging"
+	StepMerged       = "merged" // the PR is merged to main; the deploy workflow takes over
+	StepBuilding     = "building"
+	StepTesting      = "testing"
 	StepDeploying    = "deploying"
 )

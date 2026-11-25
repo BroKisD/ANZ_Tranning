@@ -2,14 +2,8 @@ package test
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,16 +15,16 @@ import (
 	"testing"
 	"time"
 
+	"anz-training/helper"
 	"anz-training/model"
 	"anz-training/service"
 )
 
-const fakeToken = "ghs_FAKEINSTALLATIONTOKEN"
+const fakeToken = "ghp_FAKEPERSONALACCESSTOKEN"
 
 // fakeGitHub is a minimal GitHub REST double. It records every request.
 type fakeGitHub struct {
 	t      *testing.T
-	pub    *rsa.PublicKey
 	srv    *httptest.Server
 	mu     sync.Mutex
 	calls  []string
@@ -42,8 +36,8 @@ type fakeGitHub struct {
 	mergeStatus    int    // override for PUT /pulls/N/merge
 }
 
-func newFakeGitHub(t *testing.T, key *rsa.PrivateKey) *fakeGitHub {
-	f := &fakeGitHub{t: t, pub: &key.PublicKey, bodies: map[string]map[string]any{}, accountType: "Organization"}
+func newFakeGitHub(t *testing.T) *fakeGitHub {
+	f := &fakeGitHub{t: t, bodies: map[string]map[string]any{}, accountType: "Organization"}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -76,23 +70,14 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 	f.bodies[sig] = body
 	f.mu.Unlock()
 
-	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	appEndpoint := strings.HasPrefix(r.URL.Path, "/app/")
-	if appEndpoint {
-		if err := verifyJWT(bearer, f.pub); err != nil {
-			f.reply(w, 401, map[string]string{"message": "bad jwt: " + err.Error()})
-			return
-		}
-	} else if bearer != fakeToken {
+	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") != fakeToken {
 		f.reply(w, 401, map[string]string{"message": "bad token"})
 		return
 	}
 
 	switch {
-	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/access_tokens"):
-		f.reply(w, 201, map[string]string{"token": fakeToken})
-	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/app/installations/"):
-		f.reply(w, 200, map[string]any{"account": map[string]string{"login": "acme"}})
+	case r.Method == "GET" && r.URL.Path == "/user":
+		f.reply(w, 200, map[string]string{"login": "acme"})
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/users/"):
 		f.reply(w, 200, map[string]string{"type": f.accountType})
 	case r.Method == "POST" && (r.URL.Path == "/orgs/acme/repos" || r.URL.Path == "/user/repos"):
@@ -118,6 +103,8 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 		f.reply(w, 201, map[string]string{"html_url": "https://github.com/acme/repo/pull/7"})
 	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls"):
 		f.reply(w, 200, []map[string]string{{"html_url": "https://github.com/acme/repo/pull/3"}})
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/dispatches"):
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "PUT" && strings.HasSuffix(r.URL.Path, "/merge"):
 		if f.mergeStatus != 0 {
 			f.reply(w, f.mergeStatus, map[string]string{"message": "Pull Request is not mergeable"})
@@ -129,71 +116,18 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func verifyJWT(tok string, pub *rsa.PublicKey) error {
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 {
-		return errString("not a jwt")
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig); err != nil {
-		return err
-	}
-	hdr, _ := base64.RawURLEncoding.DecodeString(parts[0])
-	var h map[string]string
-	_ = json.Unmarshal(hdr, &h)
-	if h["alg"] != "RS256" {
-		return errString("alg")
-	}
-	cb, _ := base64.RawURLEncoding.DecodeString(parts[1])
-	var c struct {
-		Iss string `json:"iss"`
-		Iat int64  `json:"iat"`
-		Exp int64  `json:"exp"`
-	}
-	_ = json.Unmarshal(cb, &c)
-	now := time.Now().Unix()
-	if c.Iss != "12345" || c.Exp-now > 600 || c.Exp <= now || c.Iat > now {
-		return errString("claims")
-	}
-	return nil
-}
-
-type errString string
-
-func (e errString) Error() string { return string(e) }
-
-func newTestKeyPEM(t *testing.T, pkcs8 bool) (*rsa.PrivateKey, []byte) {
+func newGH(t *testing.T, f *fakeGitHub, gitURL string) *service.GitHub {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pkcs8 {
-		der, _ := x509.MarshalPKCS8PrivateKey(key)
-		return key, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	}
-	return key, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-}
-
-func newGH(t *testing.T, f *fakeGitHub, pemBytes []byte, gitURL string) *service.GitHub {
-	t.Helper()
-	g, err := service.NewGitHub(service.GitHubConfig{
-		AppID: "12345", PrivateKeyPEM: pemBytes,
+	return service.NewGitHub(service.GitHubConfig{
 		WebhookURL: "https://builder.example.com/api/webhooks/github", WebhookSecret: "whsec_abc123",
 		APIURL: f.srv.URL, GitURL: gitURL, RetryDelay: time.Millisecond,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return g
 }
 
+var gcpEmpty = model.GCPCreds{}
+
 var (
-	ghCreds  = model.GitHubCreds{Owner: "acme", InstallationID: 99}
+	ghCreds  = model.GitHubCreds{Owner: "acme", Token: fakeToken}
 	gcpCreds = model.GCPCreds{
 		ProjectID: "my-proj", Region: "asia-southeast1", ArtifactRepo: "ai-apps",
 		WIFProvider:    "projects/1/locations/global/workloadIdentityPools/p/providers/gh",
@@ -201,44 +135,20 @@ var (
 	}
 )
 
-func TestGitHub_NewGitHub_KeyFormats(t *testing.T) {
-	for _, pkcs8 := range []bool{false, true} {
-		_, p := newTestKeyPEM(t, pkcs8)
-		if _, err := service.NewGitHub(service.GitHubConfig{AppID: "1", PrivateKeyPEM: p}); err != nil {
-			t.Fatalf("pkcs8=%v: %v", pkcs8, err)
-		}
-	}
-	if _, err := service.NewGitHub(service.GitHubConfig{AppID: "1", PrivateKeyPEM: []byte("junk")}); err == nil {
-		t.Fatal("junk key must fail")
-	}
-	_, p := newTestKeyPEM(t, false)
-	if _, err := service.NewGitHub(service.GitHubConfig{PrivateKeyPEM: p}); err == nil {
-		t.Fatal("missing app id must fail")
-	}
-}
+func TestGitHub_TokenOwner(t *testing.T) {
+	f := newFakeGitHub(t)
+	g := newGH(t, f, "")
 
-func TestGitHub_GetInstallationToken_And_Owner(t *testing.T) {
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
-	g := newGH(t, f, p, "")
-
-	tok, err := g.GetInstallationToken(context.Background(), 99)
-	if err != nil || tok != fakeToken {
-		t.Fatalf("token = %q, %v", tok, err)
-	}
-	if !f.called("POST /app/installations/99/access_tokens") {
-		t.Fatal("token endpoint not called")
-	}
-	owner, err := g.InstallationOwner(context.Background(), 99)
+	owner, err := g.TokenOwner(context.Background(), fakeToken)
 	if err != nil || owner != "acme" {
 		t.Fatalf("owner = %q, %v", owner, err)
 	}
-
-	// a JWT signed by a different key must be rejected by GitHub (fake verifies)
-	_, other := newTestKeyPEM(t, false)
-	bad := newGH(t, f, other, "")
-	if _, err := bad.GetInstallationToken(context.Background(), 99); err == nil {
-		t.Fatal("wrong signing key must fail")
+	if _, err := g.TokenOwner(context.Background(), "ghp_wrong"); err == nil {
+		t.Fatal("a rejected token must fail")
+	}
+	// a creds payload without a token never reaches GitHub
+	if _, err := g.CreateRepo(context.Background(), model.GitHubCreds{Owner: "acme"}, model.GCPCreds{}, "p1", "x"); err == nil {
+		t.Fatal("missing token must fail")
 	}
 }
 
@@ -300,10 +210,9 @@ func TestGitHub_RenderDeployWorkflow(t *testing.T) {
 }
 
 func TestGitHub_CreateRepo_Org(t *testing.T) {
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
+	f := newFakeGitHub(t)
 	f.contentFails = 2 // main not ready yet: must retry
-	g := newGH(t, f, p, "")
+	g := newGH(t, f, "")
 
 	url, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "1234abcd-0000-4000-8000-000000000000", "My App")
 	if err != nil {
@@ -321,17 +230,16 @@ func TestGitHub_CreateRepo_Org(t *testing.T) {
 		t.Fatalf("workflow commit = %#v", put)
 	}
 	raw, _ := base64.StdEncoding.DecodeString(put["content"].(string))
-	if !strings.Contains(string(raw), "my-app-1234abcd:") || !strings.Contains(string(raw), "whsec_abc123") ||
+	if !strings.Contains(string(raw), "my-app-1234abcd:") || !strings.Contains(string(raw), helper.WebhookSecretFor("whsec_abc123", "1234abcd-0000-4000-8000-000000000000")) ||
 		!strings.Contains(string(raw), `"project_id":"1234abcd-0000-4000-8000-000000000000"`) {
 		t.Fatalf("workflow content wrong:\n%s", raw)
 	}
 }
 
 func TestGitHub_CreateRepo_PersonalAccountAndErrors(t *testing.T) {
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
+	f := newFakeGitHub(t)
 	f.accountType = "User"
-	g := newGH(t, f, p, "")
+	g := newGH(t, f, "")
 	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "id-1", "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -340,8 +248,8 @@ func TestGitHub_CreateRepo_PersonalAccountAndErrors(t *testing.T) {
 	}
 
 	// invalid GCP config never reaches GitHub
-	f2 := newFakeGitHub(t, key)
-	g2 := newGH(t, f2, p, "")
+	f2 := newFakeGitHub(t)
+	g2 := newGH(t, f2, "")
 	bad := gcpCreds
 	bad.WIFProvider = "x' && rm -rf / #"
 	if _, err := g2.CreateRepo(context.Background(), ghCreds, bad, "id-1", "x"); err == nil {
@@ -353,9 +261,8 @@ func TestGitHub_CreateRepo_PersonalAccountAndErrors(t *testing.T) {
 }
 
 func TestGitHub_MergePR(t *testing.T) {
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
-	g := newGH(t, f, p, "")
+	f := newFakeGitHub(t)
+	g := newGH(t, f, "")
 	ctx := context.Background()
 
 	if err := g.MergePR(ctx, ghCreds, "https://github.com/acme/repo", "https://github.com/acme/repo/pull/7"); err != nil {
@@ -435,10 +342,9 @@ func TestGitHub_PushAndOpenPR(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
+	f := newFakeGitHub(t)
 	remoteRoot := seedRemote(t)
-	g := newGH(t, f, p, "file://"+remoteRoot)
+	g := newGH(t, f, "file://"+remoteRoot)
 
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, "main.go"), "package main\n")
@@ -490,10 +396,9 @@ func TestGitHub_PushAndOpenPR_ExistingPRAndGuards(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	key, p := newTestKeyPEM(t, false)
-	f := newFakeGitHub(t, key)
+	f := newFakeGitHub(t)
 	remoteRoot := seedRemote(t)
-	g := newGH(t, f, p, "file://"+remoteRoot)
+	g := newGH(t, f, "file://"+remoteRoot)
 	ctx := context.Background()
 
 	// PR already open (job retry): reuse it

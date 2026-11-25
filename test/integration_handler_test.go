@@ -59,9 +59,14 @@ func (f *fakeSecrets) PutSecret(_ context.Context, id, v string) (string, error)
 
 func newIntegrationServer(t *testing.T, st *fakeIntegrationStore, sec handler.SecretStore) *httptest.Server {
 	t.Helper()
-	h := handler.NewIntegrationHandler(st, sec, testKey(9), handler.HeaderUserID, nil)
+	h := handler.NewIntegrationHandler(st, sec, testKey(9), handler.HeaderUserID, func(_ context.Context, token string) (string, error) {
+		if token != "ghp_good" {
+			return "", errors.New("bad credentials")
+		}
+		return "acme", nil
+	})
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/integrations/github/callback", h.GitHubCallback)
+	mux.HandleFunc("POST /api/integrations/github", h.ConnectGitHub)
 	mux.HandleFunc("POST /api/integrations", h.UpsertIntegration)
 	mux.HandleFunc("GET /api/integrations", h.ListIntegrations)
 	s := httptest.NewServer(mux)
@@ -116,29 +121,41 @@ func gcpBody() map[string]string {
 	}
 }
 
-func TestIntegration_GitHubCallback(t *testing.T) {
+func TestIntegration_ConnectGitHub(t *testing.T) {
 	st := newFakeStore()
 	s := newIntegrationServer(t, st, nil)
+	good := map[string]string{"token": "ghp_good"}
 
-	if code, _ := do(t, s, "GET", "/api/integrations/github/callback?installation_id=42&owner=acme", "", nil); code != http.StatusUnauthorized {
+	if code, _ := do(t, s, "POST", "/api/integrations/github", "", good); code != http.StatusUnauthorized {
 		t.Fatalf("no user: got %d", code)
 	}
-	if code, _ := do(t, s, "GET", "/api/integrations/github/callback?installation_id=abc&owner=acme", "u1", nil); code != http.StatusBadRequest {
-		t.Fatalf("bad installation_id: got %d", code)
+	if code, _ := do(t, s, "POST", "/api/integrations/github", "u1", map[string]string{"token": ""}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty token: got %d", code)
 	}
-	if code, _ := do(t, s, "GET", "/api/integrations/github/callback?installation_id=42", "u1", nil); code != http.StatusBadRequest {
-		t.Fatalf("missing owner: got %d", code)
+	if code, _ := do(t, s, "POST", "/api/integrations/github", "u1", map[string]string{"token": "ghp_bad"}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("token rejected by github: got %d", code)
 	}
-	if code, _ := do(t, s, "GET", "/api/integrations/github/callback?installation_id=42&owner=acme", "u1", nil); code != http.StatusOK {
-		t.Fatalf("callback: got %d", code)
+	if _, ok := st.rows["u1|github"]; ok {
+		t.Fatal("a rejected token must not be stored")
+	}
+	code, body := do(t, s, "POST", "/api/integrations/github", "u1", good)
+	if code != http.StatusOK || strings.Contains(body, "ghp_good") {
+		t.Fatalf("connect: got %d %s (response must not echo the token)", code, body)
 	}
 	var c model.GitHubCreds
 	enc := decryptRow(t, st, "u1", model.ProviderGitHub, &c)
-	if c.Owner != "acme" || c.InstallationID != 42 {
+	if c.Owner != "acme" || c.Token != "ghp_good" {
 		t.Fatalf("unexpected creds %#v", c)
 	}
-	if strings.Contains(enc, "acme") {
-		t.Fatal("credentials stored in plaintext")
+	if strings.Contains(enc, "ghp_good") {
+		t.Fatal("token stored in plaintext")
+	}
+
+	// an explicit owner (an organization) overrides the token's own login
+	do(t, s, "POST", "/api/integrations/github", "u2", map[string]string{"token": "ghp_good", "owner": "my-org"})
+	decryptRow(t, st, "u2", model.ProviderGitHub, &c)
+	if c.Owner != "my-org" {
+		t.Fatalf("owner = %q", c.Owner)
 	}
 }
 
@@ -226,7 +243,7 @@ func TestIntegration_ListNeverReturnsCredentials(t *testing.T) {
 	st := newFakeStore()
 	s := newIntegrationServer(t, st, nil)
 	do(t, s, "POST", "/api/integrations", "u1", gcpBody())
-	do(t, s, "GET", "/api/integrations/github/callback?installation_id=42&owner=acme", "u1", nil)
+	do(t, s, "POST", "/api/integrations/github", "u1", map[string]string{"token": "ghp_good"})
 	do(t, s, "POST", "/api/integrations", "u2", gcpBody())
 
 	code, body := do(t, s, "GET", "/api/integrations", "u1", nil)

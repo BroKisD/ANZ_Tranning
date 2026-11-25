@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"anz-training/crypto"
 	"anz-training/database"
@@ -18,6 +22,11 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("usage: %s {serve|migrate up|migrate status|migrate down-to <v>}", os.Args[0])
+	}
+
+	if os.Args[1] == "serve" && noDatabaseConfigured() {
+		runStandalone()
+		return
 	}
 
 	db, err := database.ConnectDatabase()
@@ -65,40 +74,135 @@ func serve() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var secrets handler.SecretStore
+	store := repository.NewStore(database.DB)
+
+	var secrets handler.SecretStore       // BYOK writes (integration handler)
+	var secretReader service.SecretReader // BYOK reads (orchestrator); stays a nil interface when disabled
 	if project := os.Getenv("SECRET_MANAGER_PROJECT"); project != "" {
 		sm, err := service.NewSecretManager(context.Background(), project)
 		if err != nil {
 			log.Fatalf("secret manager: %v", err)
 		}
 		defer sm.Close()
-		secrets = sm
+		secrets, secretReader = sm, sm
 	}
-	var ownerResolver handler.OwnerResolver
-	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
-		gh, err := service.NewGitHub(service.GitHubConfig{
-			AppID:         appID,
-			PrivateKeyPEM: []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY")),
-			WebhookURL:    os.Getenv("WEBHOOK_URL"),
-			WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
-		})
-		if err != nil {
-			log.Fatalf("github app: %v", err)
+
+	// Modes (first match wins):
+	//   REPO_ONLY=true                         stop after the GitHub repo is created
+	//   DEMO_TEMPLATE_REPO + GCP_PROJECT_ID    deploy: demo flow + real Cloud Run deployment
+	//   DEMO_TEMPLATE_REPO                     demo: template clone, mock tests, PR, merge; no deploy
+	//   (none)                                 Claude generation + the user's own GCP integration
+	repoOnly := os.Getenv("REPO_ONLY") == "true"
+	templateRepo := os.Getenv("DEMO_TEMPLATE_REPO")
+	deploy := !repoOnly && templateRepo != "" && os.Getenv("GCP_PROJECT_ID") != ""
+	demo := !repoOnly && templateRepo != "" && !deploy
+	noUserGCP := repoOnly || demo || deploy
+	switch {
+	case repoOnly:
+		log.Print("REPO_ONLY: projects stop after the GitHub repo is created")
+	case deploy:
+		log.Printf("DEPLOY: generated code is a clone of %s, tests are mocked, apps are deployed to Cloud Run", templateRepo)
+	case demo:
+		log.Printf("DEMO: generated code is a clone of %s, tests are mocked, nothing is deployed", templateRepo)
+	}
+	webhookOn := !repoOnly && !demo // deploy workflows report back through the webhook
+	if webhookOn && (os.Getenv("WEBHOOK_SECRET") == "" || os.Getenv("WEBHOOK_URL") == "") {
+		log.Fatal("WEBHOOK_URL and WEBHOOK_SECRET are required unless REPO_ONLY=true or only DEMO_TEMPLATE_REPO is set")
+	}
+	// every GitHub call uses the user's own PAT (stored encrypted per user)
+	gh := service.NewGitHub(service.GitHubConfig{
+		WebhookURL:    os.Getenv("WEBHOOK_URL"),
+		WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
+	})
+	var deployer service.Deployer
+	var deployTimeout time.Duration
+	if deploy {
+		if static, on, err := service.StaticCredsFromEnv(os.Getenv); err != nil {
+			log.Fatalf("deploy mode: %v", err)
+		} else if on {
+			// fixed, already configured Workload Identity provider + service account
+			sd, err := service.NewStaticDeployer(static, gh)
+			if err != nil {
+				log.Fatalf("deploy mode: %v", err)
+			}
+			if deployTimeout, err = service.DeployTimeoutFromEnv(os.Getenv); err != nil {
+				log.Fatalf("deploy mode: %v", err)
+			}
+			deployer = sd
+			log.Printf("DEPLOY: using the configured Workload Identity provider and service account %s", static.ServiceAccount)
+		} else {
+			// the platform creates the GCP setup itself, one trust binding per repo
+			deployCfg, err := service.DeployConfigFromEnv(os.Getenv)
+			if err != nil {
+				log.Fatalf("deploy mode: %v", err)
+			}
+			g, err := service.NewGCP(context.Background(), deployCfg, nil)
+			if err != nil {
+				log.Fatalf("deploy mode: %v", err)
+			}
+			deployer, deployTimeout = service.NewCloudRunDeployer(g, gh), deployCfg.Timeout
 		}
-		ownerResolver = gh.InstallationOwner
 	}
-	ih := handler.NewIntegrationHandler(repository.NewStore(database.DB), secrets, masterKey, handler.HeaderUserID, ownerResolver)
-	mux.HandleFunc("GET /api/integrations/github/callback", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.GitHubCallback)).ServeHTTP)
-	mux.HandleFunc("POST /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.UpsertIntegration)).ServeHTTP)
-	mux.HandleFunc("GET /api/integrations", helper.APIKeyMiddleware(secretKey, http.HandlerFunc(ih.ListIntegrations)).ServeHTTP)
+
+	api := func(h http.HandlerFunc) http.HandlerFunc {
+		return helper.APIKeyMiddleware(secretKey, h).ServeHTTP
+	}
+	ih := handler.NewIntegrationHandler(store, secrets, masterKey, handler.HeaderUserID, gh.TokenOwner)
+	mux.HandleFunc("POST /api/integrations/github", api(ih.ConnectGitHub))
+	mux.HandleFunc("POST /api/integrations", api(ih.UpsertIntegration))
+	mux.HandleFunc("GET /api/integrations", api(ih.ListIntegrations))
+
+	var gen service.CodeGenerator = service.NewClaude(service.ClaudeConfig{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+	if demo || deploy {
+		dg, err := service.NewDemoGenerator(service.DemoGeneratorConfig{TemplateURL: templateRepo})
+		if err != nil {
+			log.Fatalf("DEMO_TEMPLATE_REPO: %v", err)
+		}
+		gen = dg
+	}
+	orch := service.NewOrchestrator(store, store, gh, gen, secretReader,
+		service.OrchestratorConfig{MasterKey: masterKey, RepoOnly: repoOnly, Demo: demo, Deployer: deployer})
+	ph := handler.NewProjectHandler(store, orch, handler.HeaderUserID)
+	ph.NoGCP = noUserGCP
+	mux.HandleFunc("POST /api/projects", api(ph.Create))
+	mux.HandleFunc("GET /api/projects/{id}", api(ph.Get))
+	mux.HandleFunc("POST /api/projects/{id}/approve", api(ph.Approve))
+	mux.HandleFunc("POST /api/projects/{id}/deploy", api(ph.Deploy))
+
+	if webhookOn {
+		// called by GitHub Actions, so no x-api-key: it authenticates with its own per-project secret
+		wh, err := handler.NewWebhookHandler(store, os.Getenv("WEBHOOK_SECRET"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		mux.HandleFunc("POST /api/webhooks/github", wh.GitHubWebhook)
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
-	log.Printf("listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+
+	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if deploy { // fail deploys whose workflow went silent
+		go service.NewDeployWatchdog(store, deployTimeout, time.Minute).Run(stop)
+	}
+	cleaned := make(chan struct{})
+	go func() {
+		defer close(cleaned)
+		<-stop.Done()
+		ctx, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_ = srv.Shutdown(ctx)
+		_ = orch.Shutdown(ctx)
+	}()
+	log.Printf("listening on %s", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+	<-cleaned // ErrServerClosed means shutdown started; wait for orchestrator cleanup
 }
 
 func runMigrate(args []string) {

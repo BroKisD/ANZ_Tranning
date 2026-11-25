@@ -4,14 +4,8 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -25,26 +19,27 @@ import (
 	"text/template"
 	"time"
 
+	"anz-training/helper"
 	"anz-training/model"
 	"anz-training/templates"
 )
 
 const (
-	defaultAPIURL  = "https://api.github.com"
-	defaultGitURL  = "https://github.com"
-	workflowPath   = ".github/workflows/deploy.yml"
-	featureBranch  = "feature/ai-gen"
-	defaultBase    = "main"
-	maxErrBodySize = 512
+	defaultAPIURL   = "https://api.github.com"
+	defaultGitURL   = "https://github.com"
+	workflowPath    = ".github/workflows/deploy.yml"
+	serviceSpecPath = "service.yml"
+	featureBranch   = "feature/ai-gen"
+	defaultBase     = "main"
+	maxErrBodySize  = 512
 )
 
-// GitHubConfig configures the GitHub App client. APIURL/GitURL only need to be
-// set to point at test doubles.
+// GitHubConfig configures the GitHub client. Every call is made with the
+// user's own Personal Access Token (model.GitHubCreds.Token). APIURL/GitURL only
+// need to be set to point at test doubles.
 type GitHubConfig struct {
-	AppID         string
-	PrivateKeyPEM []byte
 	WebhookURL    string // injected into the generated deploy workflow
-	WebhookSecret string
+	WebhookSecret string // root secret; each repo gets helper.WebhookSecretFor(root, projectID)
 	APIURL        string
 	GitURL        string
 	HTTPClient    *http.Client
@@ -52,30 +47,19 @@ type GitHubConfig struct {
 }
 
 type GitHub struct {
-	appID         string
-	key           *rsa.PrivateKey
 	webhookURL    string
 	webhookSecret string
 	apiURL        string
 	gitURL        string
 	http          *http.Client
-	now           func() time.Time
 	retryDelay    time.Duration
 }
 
-func NewGitHub(cfg GitHubConfig) (*GitHub, error) {
-	if cfg.AppID == "" {
-		return nil, errors.New("github app id required")
-	}
-	key, err := parsePrivateKey(cfg.PrivateKeyPEM)
-	if err != nil {
-		return nil, err
-	}
+func NewGitHub(cfg GitHubConfig) *GitHub {
 	g := &GitHub{
-		appID: cfg.AppID, key: key,
 		webhookURL: cfg.WebhookURL, webhookSecret: cfg.WebhookSecret,
 		apiURL: strings.TrimRight(cfg.APIURL, "/"), gitURL: strings.TrimRight(cfg.GitURL, "/"),
-		http: cfg.HTTPClient, now: time.Now, retryDelay: time.Second,
+		http: cfg.HTTPClient, retryDelay: time.Second,
 	}
 	if g.apiURL == "" {
 		g.apiURL = defaultAPIURL
@@ -89,89 +73,30 @@ func NewGitHub(cfg GitHubConfig) (*GitHub, error) {
 	if g.http == nil {
 		g.http = &http.Client{Timeout: 30 * time.Second}
 	}
-	return g, nil
+	return g
 }
 
-func parsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode(pemBytes)
-	if block == nil {
-		return nil, errors.New("github app private key: no PEM block")
+// tokenFor returns the user's PAT. It is only ever held in memory for a job.
+func tokenFor(gh model.GitHubCreds) (string, error) {
+	if gh.Token == "" {
+		return "", errors.New("github integration has no token")
 	}
-	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		return k, nil
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New("github app private key: unsupported format")
-	}
-	rk, ok := k.(*rsa.PrivateKey)
-	if !ok {
-		return nil, errors.New("github app private key: not RSA")
-	}
-	return rk, nil
+	return gh.Token, nil
 }
 
-// ---------- JWT + installation token ----------
-
-func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
-
-// appJWT signs a short-lived RS256 JWT identifying the GitHub App.
-func (g *GitHub) appJWT() (string, error) {
-	now := g.now()
-	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
-	claims, _ := json.Marshal(map[string]any{
-		"iat": now.Add(-60 * time.Second).Unix(), // clock-skew allowance
-		"exp": now.Add(9 * time.Minute).Unix(),   // GitHub max is 10 min
-		"iss": g.appID,
-	})
-	signing := b64(header) + "." + b64(claims)
-	sum := sha256.Sum256([]byte(signing))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, g.key, crypto.SHA256, sum[:])
-	if err != nil {
-		return "", err
-	}
-	return signing + "." + b64(sig), nil
-}
-
-// GetInstallationToken exchanges an App JWT for a ~1-hour installation token.
-// The token is returned to the caller only; it is never stored or logged.
-func (g *GitHub) GetInstallationToken(ctx context.Context, installationID int64) (string, error) {
-	jwt, err := g.appJWT()
-	if err != nil {
-		return "", fmt.Errorf("sign app jwt: %w", err)
-	}
+// TokenOwner returns the login of the account a token belongs to. It validates
+// the token and fills in `owner` when the user does not name an organization.
+func (g *GitHub) TokenOwner(ctx context.Context, token string) (string, error) {
 	var out struct {
-		Token string `json:"token"`
+		Login string `json:"login"`
 	}
-	path := fmt.Sprintf("/app/installations/%d/access_tokens", installationID)
-	if err := g.api(ctx, http.MethodPost, path, jwt, nil, &out); err != nil {
-		return "", fmt.Errorf("mint installation token: %w", err)
-	}
-	if out.Token == "" {
-		return "", errors.New("mint installation token: empty token")
-	}
-	return out.Token, nil
-}
-
-// InstallationOwner returns the account login an installation belongs to. It
-// is used to fill in `owner` on the GitHub App setup callback.
-func (g *GitHub) InstallationOwner(ctx context.Context, installationID int64) (string, error) {
-	jwt, err := g.appJWT()
-	if err != nil {
+	if err := g.api(ctx, http.MethodGet, "/user", token, nil, &out); err != nil {
 		return "", err
 	}
-	var out struct {
-		Account struct {
-			Login string `json:"login"`
-		} `json:"account"`
+	if out.Login == "" {
+		return "", errors.New("token has no user")
 	}
-	if err := g.api(ctx, http.MethodGet, fmt.Sprintf("/app/installations/%d", installationID), jwt, nil, &out); err != nil {
-		return "", err
-	}
-	if out.Account.Login == "" {
-		return "", errors.New("installation has no account")
-	}
-	return out.Account.Login, nil
+	return out.Login, nil
 }
 
 // ---------- HTTP helper ----------
@@ -301,26 +226,63 @@ func RenderDeployWorkflow(d DeployData) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ServiceData is what templates/service.yml.tmpl is rendered with.
+type ServiceData struct {
+	ServiceName string
+	// RuntimeServiceAccount, when set, is the account the app runs as (instead of
+	// the project's default compute account).
+	RuntimeServiceAccount string
+}
+
+// RenderServiceYAML renders the Cloud Run service spec (the repo's IaC). The
+// image stays as IMAGE_PLACEHOLDER; the deploy workflow substitutes it.
+func RenderServiceYAML(d ServiceData) ([]byte, error) {
+	if !safeValue.MatchString(d.ServiceName) {
+		return nil, errors.New("service.yml: invalid ServiceName")
+	}
+	if d.RuntimeServiceAccount != "" && !safeValue.MatchString(d.RuntimeServiceAccount) {
+		return nil, errors.New("service.yml: invalid RuntimeServiceAccount")
+	}
+	t, err := template.New("service").Delims("[[", "]]").Option("missingkey=error").Parse(templates.ServiceYAML)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, d); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // ---------- CreateRepo ----------
 
 // CreateRepo creates a private repo (auto-initialised on main), commits the
 // rendered deploy workflow to main and returns the repo's web URL.
 func (g *GitHub) CreateRepo(ctx context.Context, gh model.GitHubCreds, gcp model.GCPCreds, projectID, projectName string) (string, error) {
 	name := ServiceName(projectName, projectID)
-	workflow, err := RenderDeployWorkflow(DeployData{
-		BranchName: defaultBase, WIFProvider: gcp.WIFProvider, ServiceAccount: gcp.ServiceAccount,
-		Region: gcp.Region, GCPProjectID: gcp.ProjectID, ArtifactRepo: gcp.ArtifactRepo,
-		ServiceName: name, WebhookURL: g.webhookURL, WebhookSecret: g.webhookSecret, ProjectID: projectID,
-	})
-	if err != nil {
-		return "", err
+	// With no GCP project (repo-only demo mode) there is nothing to deploy to,
+	// so the repo is created without a deploy workflow.
+	var workflow, serviceYAML []byte
+	if gcp.ProjectID != "" {
+		var err error
+		if serviceYAML, err = RenderServiceYAML(ServiceData{ServiceName: name, RuntimeServiceAccount: gcp.RuntimeServiceAccount}); err != nil {
+			return "", err
+		}
+		workflow, err = RenderDeployWorkflow(DeployData{
+			BranchName: defaultBase, WIFProvider: gcp.WIFProvider, ServiceAccount: gcp.ServiceAccount,
+			Region: gcp.Region, GCPProjectID: gcp.ProjectID, ArtifactRepo: gcp.ArtifactRepo,
+			ServiceName: name, WebhookURL: g.webhookURL, WebhookSecret: helper.WebhookSecretFor(g.webhookSecret, projectID), ProjectID: projectID,
+		})
+		if err != nil {
+			return "", err
+		}
 	}
-	token, err := g.GetInstallationToken(ctx, gh.InstallationID)
+	token, err := tokenFor(gh)
 	if err != nil {
 		return "", err
 	}
 
-	// Installation tokens can only create repos under organizations.
+	// a PAT creates repos under the user (/user/repos) or an organization.
 	var acct struct {
 		Type string `json:"type"`
 	}
@@ -342,29 +304,40 @@ func (g *GitHub) CreateRepo(ctx context.Context, gh model.GitHubCreds, gcp model
 		return "", fmt.Errorf("create repo: %w", err)
 	}
 
-	// auto_init commits asynchronously; retry briefly if main isn't ready yet.
-	contentPath := fmt.Sprintf("/repos/%s/%s/contents/%s", url.PathEscape(gh.Owner), url.PathEscape(name), workflowPath)
+	if workflow == nil {
+		return repo.HTMLURL, nil
+	}
+	// [skip ci]: creating the repo must not start a deploy of an empty repo.
+	if err := g.putFile(ctx, token, gh.Owner, name, workflowPath, "ci: add Cloud Run deploy workflow [skip ci]", workflow); err != nil {
+		return "", fmt.Errorf("commit workflow: %w", err)
+	}
+	if err := g.putFile(ctx, token, gh.Owner, name, serviceSpecPath, "ci: add Cloud Run service spec [skip ci]", serviceYAML); err != nil {
+		return "", fmt.Errorf("commit service.yml: %w", err)
+	}
+	return repo.HTMLURL, nil
+}
+
+// putFile commits one file to the default branch through the contents API.
+// auto_init commits asynchronously, so a 404/409 is retried briefly.
+func (g *GitHub) putFile(ctx context.Context, token, owner, repo, path, message string, content []byte) error {
+	contentPath := fmt.Sprintf("/repos/%s/%s/contents/%s", url.PathEscape(owner), url.PathEscape(repo), path)
 	put := map[string]any{
-		"message": "ci: add Cloud Run deploy workflow",
-		"content": base64.StdEncoding.EncodeToString(workflow),
+		"message": message,
+		"content": base64.StdEncoding.EncodeToString(content),
 		"branch":  defaultBase,
 	}
 	for attempt := 0; ; attempt++ {
-		err = g.api(ctx, http.MethodPut, contentPath, token, put, nil)
+		err := g.api(ctx, http.MethodPut, contentPath, token, put, nil)
 		var ae *APIError
 		if err == nil || attempt >= 4 || !errors.As(err, &ae) || (ae.Status != 404 && ae.Status != 409) {
-			break
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return ctx.Err()
 		case <-time.After(g.retryDelay):
 		}
 	}
-	if err != nil {
-		return "", fmt.Errorf("commit workflow: %w", err)
-	}
-	return repo.HTMLURL, nil
 }
 
 // ---------- repo / PR URL parsing ----------
@@ -397,8 +370,8 @@ func parsePRURL(raw string) (owner, name string, number int, err error) {
 	return parts[0], parts[1], n, nil
 }
 
-// repoFor validates that repoURL belongs to the connected account, so an
-// installation token is never used against someone else's repository.
+// repoFor validates that repoURL belongs to the connected account, so the
+// token is never used against someone else's repository.
 func repoFor(gh model.GitHubCreds, repoURL string) (owner, name string, err error) {
 	owner, name, err = parseRepoURL(repoURL)
 	if err != nil {
@@ -445,7 +418,7 @@ func (g *GitHub) PushAndOpenPR(ctx context.Context, workspaceDir string, gh mode
 	if err != nil {
 		return "", err
 	}
-	token, err := g.GetInstallationToken(ctx, gh.InstallationID)
+	token, err := tokenFor(gh)
 	if err != nil {
 		return "", err
 	}
@@ -483,8 +456,16 @@ func (g *GitHub) PushAndOpenPR(ctx context.Context, workspaceDir string, gh mode
 		}
 	}
 	_ = os.RemoveAll(workspaceDir + "/.github") // never trust generated CI config
-	if _, err := git.run(ctx, "checkout", base, "--", ".github"); err != nil {
-		return "", err
+	if out, _ := git.run(ctx, "ls-tree", "--name-only", base, ".github"); strings.TrimSpace(out) != "" {
+		if _, err := git.run(ctx, "checkout", base, "--", ".github"); err != nil {
+			return "", err
+		}
+	}
+	// the IaC is as trusted as the workflow: generated code may not change it
+	if out, _ := git.run(ctx, "ls-tree", "--name-only", base, serviceSpecPath); strings.TrimSpace(out) != "" {
+		if _, err := git.run(ctx, "checkout", base, "--", serviceSpecPath); err != nil {
+			return "", err
+		}
 	}
 	if _, err := git.run(ctx, "add", "-A"); err != nil {
 		return "", err
@@ -549,13 +530,32 @@ func (g *GitHub) MergePR(ctx context.Context, gh model.GitHubCreds, repoURL, prU
 	if !strings.EqualFold(pOwner, owner) || !strings.EqualFold(pName, name) {
 		return errors.New("pull request does not belong to the repository")
 	}
-	token, err := g.GetInstallationToken(ctx, gh.InstallationID)
+	token, err := tokenFor(gh)
 	if err != nil {
 		return err
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", url.PathEscape(owner), url.PathEscape(name), number)
 	if err := g.api(ctx, http.MethodPut, path, token, map[string]any{"merge_method": "squash"}, nil); err != nil {
 		return fmt.Errorf("merge pr: %w", err)
+	}
+	return nil
+}
+
+// ---------- DispatchWorkflow ----------
+
+// DispatchWorkflow starts a workflow that has a workflow_dispatch trigger.
+func (g *GitHub) DispatchWorkflow(ctx context.Context, gh model.GitHubCreds, repoURL, workflowFile, ref string) error {
+	owner, name, err := repoFor(gh, repoURL)
+	if err != nil {
+		return err
+	}
+	token, err := tokenFor(gh)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/dispatches", url.PathEscape(owner), url.PathEscape(name), url.PathEscape(workflowFile))
+	if err := g.api(ctx, http.MethodPost, path, token, map[string]any{"ref": ref}, nil); err != nil {
+		return fmt.Errorf("dispatch workflow: %w", err)
 	}
 	return nil
 }

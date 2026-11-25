@@ -5,3 +5,6 @@ import _ "embed"
 
 //go:embed deploy.yml.tmpl
 var DeployWorkflow string
+
+//go:embed service.yml.tmpl
+var ServiceYAML string

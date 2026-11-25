@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"anz-training/model"
 
@@ -121,4 +122,16 @@ func (s *Store) UpdateProjectIf(ctx context.Context, id, fromStatus string, fiel
 		return false, fmt.Errorf("update project: %w", res.Error)
 	}
 	return res.RowsAffected == 1, nil
+}
+
+// ListStaleDeploying returns the projects that are deploying and have not been
+// updated since before (progress events refresh updated_at).
+func (s *Store) ListStaleDeploying(ctx context.Context, before time.Time) ([]model.Project, error) {
+	var ps []model.Project
+	err := s.db.WithContext(ctx).
+		Where("status = ? AND updated_at < ?", model.StatusDeploying, before).Find(&ps).Error
+	if err != nil {
+		return nil, fmt.Errorf("list stale deploying projects: %w", err)
+	}
+	return ps, nil
 }
