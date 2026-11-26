@@ -1,7 +1,6 @@
-package test
+package crypto_test
 
 import (
-	"anz-training/internal/testutil"
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
@@ -9,6 +8,7 @@ import (
 	"testing"
 
 	"anz-training/crypto"
+	"anz-training/internal/testutil"
 )
 
 func TestCrypto_RoundTrip(t *testing.T) {
