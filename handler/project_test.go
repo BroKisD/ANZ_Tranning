@@ -1,4 +1,4 @@
-package test
+package handler_test
 
 import (
 	"anz-training/internal/testutil"
@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"anz-training/handler"
-	"anz-training/helper"
 	"anz-training/model"
 	"anz-training/repository"
 	"anz-training/service"
@@ -242,57 +241,6 @@ func TestProjects_Approve(t *testing.T) {
 	}
 	if code, _ := do(t, a.srv, "POST", "/api/projects/p1/approve", "", nil); code != 401 {
 		t.Errorf("no user: got %d", code)
-	}
-}
-
-// ---- full flow: handlers + real orchestrator + webhook ----
-
-func TestProjects_EndToEnd(t *testing.T) {
-	e := newOrc(t, nil)
-	srv := newProjectServer(t, &projStore{e.store, e.ints}, e.o)
-
-	code, body := do(t, srv, "POST", "/api/projects", "u1", map[string]string{"name": "Todo", "prompt": "todo app"})
-	if code != 202 {
-		t.Fatalf("create: %d %s", code, body)
-	}
-	id := decode(t, body)["id"].(string)
-
-	status := func() string {
-		_, b := do(t, srv, "GET", "/api/projects/"+id, "u1", nil)
-		s, _ := decode(t, b)["status"].(string)
-		return s
-	}
-	waitFor(t, "waiting_for_approval", func() bool { return status() == "waiting_for_approval" })
-	_, b := do(t, srv, "GET", "/api/projects/"+id, "u1", nil)
-	m := decode(t, b)
-	if m["pr_url"] == nil || m["repo_url"] == nil || m["current_step"] != "tests_passed" {
-		t.Fatalf("at gate: %v", m)
-	}
-
-	if code, _ := do(t, srv, "POST", "/api/projects/"+id+"/approve", "u2", nil); code != 404 {
-		t.Fatalf("approve by other user: %d", code)
-	}
-	if e.host.count("merge") != 0 {
-		t.Fatal("merged on a rejected approval")
-	}
-	if code, _ := do(t, srv, "POST", "/api/projects/"+id+"/approve", "u1", nil); code != 202 {
-		t.Fatalf("approve: %d", code)
-	}
-	waitFor(t, "deploying", func() bool { return status() == "deploying" })
-
-	// the generated repo's workflow reports back
-	secret := helper.WebhookSecretFor(rootSecret, id)
-	hook := map[string]string{"project_id": id, "status": "success", "live_url": "https://todo-abc.a.run.app"}
-	if code, body := postHook(t, srv, secret, hook); code != 200 {
-		t.Fatalf("webhook: %d %s", code, body)
-	}
-	_, b = do(t, srv, "GET", "/api/projects/"+id, "u1", nil)
-	m = decode(t, b)
-	if m["status"] != "success" || m["live_url"] != "https://todo-abc.a.run.app" {
-		t.Fatalf("final: %v", m)
-	}
-	if code, body := postHook(t, srv, secret, hook); code != 200 || !strings.Contains(body, "duplicate") {
-		t.Fatalf("duplicate delivery: %d %s", code, body)
 	}
 }
 

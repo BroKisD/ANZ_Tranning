@@ -1,7 +1,7 @@
 //go:build integration
 // +build integration
 
-package test
+package handler_test
 
 import (
 	"anz-training/handler"
