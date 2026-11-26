@@ -5,6 +5,7 @@ package handler_test
 
 import (
 	"anz-training/handler"
+	"anz-training/internal/testutil"
 	"anz-training/model"
 	"anz-training/repository"
 	"anz-training/service"
@@ -13,8 +14,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -29,17 +28,13 @@ func TestUsersAPI_WithMySQL(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	ctx := context.Background()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("find test fixture path")
-	}
 
 	mysqlC, err := mysql.Run(ctx,
 		"mysql:8.0",
 		mysql.WithDatabase("testdb"),
 		mysql.WithUsername("test"),
 		mysql.WithPassword("test"),
-		mysql.WithScripts(filepath.Join(filepath.Dir(thisFile), "testdata", "schema.sql")),
+		mysql.WithScripts(testutil.SchemaPath()),
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -1,12 +1,11 @@
 //go:build integration
 // +build integration
 
-package test
+package repository_test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
-	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,11 +25,10 @@ import (
 func TestStore_Integrations_WithMySQL(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 	ctx := context.Background()
-	_, thisFile, _, _ := runtime.Caller(0)
 
 	c, err := mysql.Run(ctx, "mysql:8.0",
 		mysql.WithDatabase("testdb"), mysql.WithUsername("test"), mysql.WithPassword("test"),
-		mysql.WithScripts(filepath.Join(filepath.Dir(thisFile), "testdata", "schema.sql")),
+		mysql.WithScripts(testutil.SchemaPath()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -78,11 +76,10 @@ func TestStore_Integrations_WithMySQL(t *testing.T) {
 func TestStore_Projects_WithMySQL(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 	ctx := context.Background()
-	_, thisFile, _, _ := runtime.Caller(0)
 
 	c, err := mysql.Run(ctx, "mysql:8.0",
 		mysql.WithDatabase("testdb"), mysql.WithUsername("test"), mysql.WithPassword("test"),
-		mysql.WithScripts(filepath.Join(filepath.Dir(thisFile), "testdata", "schema.sql")),
+		mysql.WithScripts(testutil.SchemaPath()),
 	)
 	if err != nil {
 		t.Fatal(err)
