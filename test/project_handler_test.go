@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,8 +28,8 @@ const rootSecret = "root-webhook-secret"
 
 // projStore combines the in-memory project and integration stores.
 type projStore struct {
-	*memStore
-	*memIntegrations
+	*testutil.MemStore
+	*testutil.MemIntegrations
 }
 
 type fakeRunner struct {
@@ -70,11 +71,11 @@ type projAPI struct {
 
 func newProjAPI(t *testing.T, withIntegrations bool) *projAPI {
 	t.Helper()
-	ms := &memStore{projects: map[string]*model.Project{}}
-	mi := &memIntegrations{rows: map[string]model.UserIntegration{}}
+	ms := testutil.NewMemStore()
+	mi := testutil.NewMemIntegrations()
 	if withIntegrations {
-		mi.put(t, testKey(5), "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", Token: "ghp_x"})
-		mi.put(t, testKey(5), "u1", model.ProviderGCP, gcpCreds)
+		mi.Put(t, testutil.TestKey(5), "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", Token: "ghp_x"})
+		mi.Put(t, testutil.TestKey(5), "u1", model.ProviderGCP, testutil.GCPCreds)
 	}
 	a := &projAPI{store: &projStore{ms, mi}, runner: &fakeRunner{}}
 	a.srv = newProjectServer(t, a.store, a.runner)
@@ -121,7 +122,7 @@ func TestProjects_Create(t *testing.T) {
 	if id == "" || resp["status"] != "pending" || resp["current_step"] != "initializing" {
 		t.Fatalf("response = %v", resp)
 	}
-	p := a.store.get(id)
+	p := a.store.Get(id)
 	if p.OwnerID != "u1" || p.Name != "My App" || p.Prompt != "todo list" || p.Status != model.StatusPending || p.BranchName != "main" {
 		t.Fatalf("stored project = %+v", p)
 	}
@@ -159,7 +160,7 @@ func TestProjects_CreateValidation(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad json: got %d", resp.StatusCode)
 	}
-	if len(a.store.projects) != 0 || len(a.runner.started) != 0 {
+	if len(a.store.Projects) != 0 || len(a.runner.started) != 0 {
 		t.Fatal("invalid requests must not create or start anything")
 	}
 }
@@ -171,7 +172,7 @@ func TestProjects_StartFailureMarksFailed(t *testing.T) {
 	if code != http.StatusInternalServerError {
 		t.Fatalf("got %d", code)
 	}
-	for _, p := range a.store.projects {
+	for _, p := range a.store.Projects {
 		if p.Status != model.StatusFailed {
 			t.Fatalf("project left in %s after a failed start", p.Status)
 		}
@@ -182,7 +183,7 @@ func TestProjects_StartFailureMarksFailed(t *testing.T) {
 
 func TestProjects_Get(t *testing.T) {
 	a := newProjAPI(t, true)
-	a.store.add(model.Project{
+	a.store.Add(model.Project{
 		ID: "p1", OwnerID: "u1", Name: "App", Prompt: "SECRET PROMPT", Status: model.StatusSuccess,
 		CurrentStep: model.StepDeploying, RepoURL: "https://github.com/acme/r", PRURL: "https://github.com/acme/r/pull/1",
 		LiveURL: "https://app.run.app", ErrorMessage: "",

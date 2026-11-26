@@ -1,8 +1,8 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"anz-training/crypto"
 	"anz-training/model"
 	"anz-training/repository"
 	"anz-training/service"
@@ -27,116 +26,6 @@ var (
 )
 
 // ---- fakes ----
-
-type memStore struct {
-	mu       sync.Mutex
-	projects map[string]*model.Project
-	history  []string // "status|step" after every write
-}
-
-func (m *memStore) add(p model.Project) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := p
-	m.projects[p.ID] = &cp
-}
-
-func (m *memStore) apply(p *model.Project, f map[string]any) {
-	for k, v := range f {
-		s, _ := v.(string)
-		switch k {
-		case "status":
-			p.Status = s
-		case "current_step":
-			p.CurrentStep = s
-		case "repo_url":
-			p.RepoURL = s
-		case "pr_url":
-			p.PRURL = s
-		case "live_url":
-			p.LiveURL = s
-		case "error_message":
-			p.ErrorMessage = s
-		}
-	}
-	m.history = append(m.history, p.Status+"|"+p.CurrentStep)
-}
-
-func (m *memStore) GetProject(_ context.Context, id string) (*model.Project, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.projects[id]
-	if !ok {
-		return nil, model.ErrNotFound
-	}
-	cp := *p
-	return &cp, nil
-}
-
-func (m *memStore) UpdateProject(_ context.Context, id string, f map[string]any) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.projects[id]
-	if !ok {
-		return model.ErrNotFound
-	}
-	m.apply(p, f)
-	return nil
-}
-
-func (m *memStore) UpdateProjectIf(_ context.Context, id, from string, f map[string]any) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.projects[id]
-	if !ok || p.Status != from {
-		return false, nil
-	}
-	m.apply(p, f)
-	return true, nil
-}
-
-func (m *memStore) CreateProject(_ context.Context, p *model.Project) error {
-	m.add(*p)
-	return nil
-}
-
-func (m *memStore) get(id string) model.Project {
-	p, _ := m.GetProject(context.Background(), id)
-	return *p
-}
-
-func (m *memStore) hist() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]string(nil), m.history...)
-}
-
-type memIntegrations struct {
-	mu   sync.Mutex
-	rows map[string]model.UserIntegration
-}
-
-func (m *memIntegrations) GetIntegration(_ context.Context, u, p string) (*model.UserIntegration, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.rows[u+"|"+p]
-	if !ok {
-		return nil, model.ErrNotFound
-	}
-	return &r, nil
-}
-
-func (m *memIntegrations) put(t *testing.T, key []byte, user, provider string, creds any) {
-	t.Helper()
-	plain, _ := json.Marshal(creds)
-	enc, err := crypto.Encrypt(key, plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.mu.Lock()
-	m.rows[user+"|"+provider] = model.UserIntegration{UserID: user, Provider: provider, EncryptedCredentials: enc}
-	m.mu.Unlock()
-}
 
 type fakeHost struct {
 	mu                          sync.Mutex
@@ -258,8 +147,8 @@ func (f *fakeSecretReader) GetSecret(_ context.Context, ref string) (string, err
 
 type orcEnv struct {
 	t     *testing.T
-	store *memStore
-	ints  *memIntegrations
+	store *testutil.MemStore
+	ints  *testutil.MemIntegrations
 	host  *fakeHost
 	gen   *fakeGen
 	o     *service.Orchestrator
@@ -270,15 +159,15 @@ func newOrc(t *testing.T, secrets service.SecretReader, mods ...func(*service.Or
 	t.Helper()
 	e := &orcEnv{
 		t:     t,
-		store: &memStore{projects: map[string]*model.Project{}},
-		ints:  &memIntegrations{rows: map[string]model.UserIntegration{}},
+		store: testutil.NewMemStore(),
+		ints:  testutil.NewMemIntegrations(),
 		host:  &fakeHost{},
 		gen:   &fakeGen{dir: t.TempDir()},
-		key:   testKey(5),
+		key:   testutil.TestKey(5),
 	}
-	e.ints.put(t, e.key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", Token: "ghp_x"})
-	e.ints.put(t, e.key, "u1", model.ProviderGCP, gcpCreds)
-	e.store.add(model.Project{ID: "p1", OwnerID: "u1", Name: "My App", Prompt: "todo app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
+	e.ints.Put(t, e.key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: "acme", Token: "ghp_x"})
+	e.ints.Put(t, e.key, "u1", model.ProviderGCP, testutil.GCPCreds)
+	e.store.Add(model.Project{ID: "p1", OwnerID: "u1", Name: "My App", Prompt: "todo app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
 
 	cfg := service.OrchestratorConfig{MasterKey: e.key, ApprovalTimeout: 5 * time.Second, StageTimeout: 5 * time.Second}
 	for _, m := range mods {
@@ -314,7 +203,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func (e *orcEnv) waitStatus(id, status string) {
 	e.t.Helper()
-	waitFor(e.t, "status "+status, func() bool { return e.store.get(id).Status == status })
+	waitFor(e.t, "status "+status, func() bool { return e.store.Get(id).Status == status })
 }
 
 func finish(t *testing.T, done <-chan struct{}) {
@@ -333,7 +222,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 	done := e.runAsync(context.Background(), "p1")
 
 	e.waitStatus("p1", model.StatusWaitingForApproval)
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.RepoURL != "https://github.com/acme/p1" || p.PRURL != "https://github.com/acme/p1/pull/1" || p.CurrentStep != model.StepTestsPassed {
 		t.Fatalf("project at gate: %+v", p)
 	}
@@ -355,7 +244,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 	}
 	finish(t, done)
 
-	p = e.store.get("p1")
+	p = e.store.Get("p1")
 	if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.ErrorMessage != "" {
 		t.Fatalf("final project: %+v", p)
 	}
@@ -370,7 +259,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 		"deploying|merging",
 		"deploying|merged",
 	}
-	if got := e.store.hist(); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got := e.store.Hist(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("state transitions:\n got  %v\n want %v", got, want)
 	}
 	if r := e.gen.reqs[0]; r.ProjectID != "p1" || r.Prompt != "todo app" || r.AnthropicAPIKey != "" {
@@ -427,9 +316,9 @@ func TestOrchestrator_StageFailures(t *testing.T) {
 		wantMsg   string
 		wantCalls map[string]int // host calls expected
 	}{
-		{"github not connected", func(e *orcEnv) { delete(e.ints.rows, "u1|github") }, "github integration is not configured", map[string]int{"create": 0}},
-		{"gcp not configured", func(e *orcEnv) { delete(e.ints.rows, "u1|gcp") }, "gcp integration is not configured", map[string]int{"create": 0}},
-		{"undecryptable creds", func(e *orcEnv) { e.ints.put(e.t, testKey(1), "u1", "github", gcpCreds) }, "decrypt github integration", map[string]int{"create": 0}},
+		{"github not connected", func(e *orcEnv) { delete(e.ints.Rows, "u1|github") }, "github integration is not configured", map[string]int{"create": 0}},
+		{"gcp not configured", func(e *orcEnv) { delete(e.ints.Rows, "u1|gcp") }, "gcp integration is not configured", map[string]int{"create": 0}},
+		{"undecryptable creds", func(e *orcEnv) { e.ints.Put(e.t, testutil.TestKey(1), "u1", "github", testutil.GCPCreds) }, "decrypt github integration", map[string]int{"create": 0}},
 		{"create repo", func(e *orcEnv) { e.host.createErr = errors.New("quota exceeded") }, "create repo: quota exceeded", map[string]int{"create": 1, "push": 0}},
 		{"generation", func(e *orcEnv) { e.gen.err = errors.New("tests still failing") }, "generate: tests still failing", map[string]int{"create": 1, "push": 0}},
 		{"open pr", func(e *orcEnv) { e.host.pushErr = errors.New("push rejected") }, "open pull request: push rejected", map[string]int{"push": 1, "merge": 0}},
@@ -439,7 +328,7 @@ func TestOrchestrator_StageFailures(t *testing.T) {
 			e := newOrc(t, nil)
 			tc.setup(e)
 			finish(t, e.runAsync(context.Background(), "p1"))
-			p := e.store.get("p1")
+			p := e.store.Get("p1")
 			if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, tc.wantMsg) {
 				t.Fatalf("status=%s msg=%q, want failed containing %q", p.Status, p.ErrorMessage, tc.wantMsg)
 			}
@@ -472,7 +361,7 @@ func TestOrchestrator_MergeFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "merge pull request: not mergeable") {
 		t.Fatalf("project: %+v", p)
 	}
@@ -481,7 +370,7 @@ func TestOrchestrator_MergeFailure(t *testing.T) {
 func TestOrchestrator_ApprovalTimeout(t *testing.T) {
 	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.ApprovalTimeout = 150 * time.Millisecond })
 	finish(t, e.runAsync(context.Background(), "p1"))
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "approval timed out") {
 		t.Fatalf("project: %+v", p)
 	}
@@ -500,7 +389,7 @@ func TestOrchestrator_CancelWhileWaiting(t *testing.T) {
 	e.waitStatus("p1", model.StatusWaitingForApproval)
 	cancel()
 	finish(t, done)
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "cancelled") {
 		t.Fatalf("project: %+v", p)
 	}
@@ -510,9 +399,9 @@ func TestOrchestrator_BYOK(t *testing.T) {
 	// key is fetched via the stored ref and handed to the generator
 	sec := &fakeSecretReader{val: "sk-ant-USER-KEY"}
 	e := newOrc(t, sec)
-	gcp := gcpCreds
+	gcp := testutil.GCPCreds
 	gcp.AnthropicSecretRef = "projects/p/secrets/anthropic-key-u1/versions/latest"
-	e.ints.put(t, e.key, "u1", model.ProviderGCP, gcp)
+	e.ints.Put(t, e.key, "u1", model.ProviderGCP, gcp)
 	done := e.runAsync(context.Background(), "p1")
 	e.waitStatus("p1", model.StatusWaitingForApproval)
 	if sec.ref != gcp.AnthropicSecretRef || e.gen.reqs[0].AnthropicAPIKey != "sk-ant-USER-KEY" {
@@ -522,23 +411,23 @@ func TestOrchestrator_BYOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	if strings.Contains(fmt.Sprint(e.store.hist(), e.store.get("p1")), "sk-ant-USER-KEY") {
+	if strings.Contains(fmt.Sprint(e.store.Hist(), e.store.Get("p1")), "sk-ant-USER-KEY") {
 		t.Fatal("API key leaked into project state")
 	}
 
 	// BYOK configured but secrets unavailable: fail, never fall back to the platform key
 	e2 := newOrc(t, nil)
-	e2.ints.put(t, e2.key, "u1", model.ProviderGCP, gcp)
+	e2.ints.Put(t, e2.key, "u1", model.ProviderGCP, gcp)
 	finish(t, e2.runAsync(context.Background(), "p1"))
-	if p := e2.store.get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "BYOK") || len(e2.gen.reqs) != 0 {
+	if p := e2.store.Get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "BYOK") || len(e2.gen.reqs) != 0 {
 		t.Fatalf("project: %+v reqs=%d", p, len(e2.gen.reqs))
 	}
 
 	// secret read failure
 	e3 := newOrc(t, &fakeSecretReader{err: errors.New("permission denied")})
-	e3.ints.put(t, e3.key, "u1", model.ProviderGCP, gcp)
+	e3.ints.Put(t, e3.key, "u1", model.ProviderGCP, gcp)
 	finish(t, e3.runAsync(context.Background(), "p1"))
-	if p := e3.store.get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "read BYOK api key") {
+	if p := e3.store.Get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "read BYOK api key") {
 		t.Fatalf("project: %+v", p)
 	}
 }
@@ -581,7 +470,7 @@ func TestOrchestrator_ShutdownCancelsRuns(t *testing.T) {
 	if err := e.o.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if p := e.store.get("p1"); p.Status != model.StatusFailed {
+	if p := e.store.Get("p1"); p.Status != model.StatusFailed {
 		t.Fatalf("status after shutdown = %s", p.Status)
 	}
 }
@@ -589,8 +478,8 @@ func TestOrchestrator_ShutdownCancelsRuns(t *testing.T) {
 func TestOrchestrator_GenerationConcurrencyLimit(t *testing.T) {
 	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.MaxConcurrentGenerations = 1 })
 	e.gen.delay = 80 * time.Millisecond
-	e.store.add(model.Project{ID: "p2", OwnerID: "u1", Name: "Two", Prompt: "x", Status: model.StatusPending})
-	e.store.add(model.Project{ID: "p3", OwnerID: "u1", Name: "Three", Prompt: "x", Status: model.StatusPending})
+	e.store.Add(model.Project{ID: "p2", OwnerID: "u1", Name: "Two", Prompt: "x", Status: model.StatusPending})
+	e.store.Add(model.Project{ID: "p3", OwnerID: "u1", Name: "Three", Prompt: "x", Status: model.StatusPending})
 	for _, id := range []string{"p1", "p2", "p3"} {
 		e.runAsync(context.Background(), id)
 	}
@@ -606,23 +495,23 @@ func TestOrchestrator_PanicAndLongErrors(t *testing.T) {
 	e := newOrc(t, nil)
 	e.gen.panicV = "boom"
 	finish(t, e.runAsync(context.Background(), "p1")) // must not crash the test binary
-	if p := e.store.get("p1"); p.Status != model.StatusFailed || p.ErrorMessage != "internal error" {
+	if p := e.store.Get("p1"); p.Status != model.StatusFailed || p.ErrorMessage != "internal error" {
 		t.Fatalf("project: %+v", p)
 	}
 
 	e2 := newOrc(t, nil)
 	e2.gen.err = errors.New(strings.Repeat("x", 5000))
 	finish(t, e2.runAsync(context.Background(), "p1"))
-	if msg := e2.store.get("p1").ErrorMessage; len(msg) > 1100 {
+	if msg := e2.store.Get("p1").ErrorMessage; len(msg) > 1100 {
 		t.Fatalf("error message not truncated: %d bytes", len(msg))
 	}
 }
 
 func TestOrchestrator_AlreadyStartedProjectIsLeftAlone(t *testing.T) {
 	e := newOrc(t, nil)
-	e.store.add(model.Project{ID: "p9", OwnerID: "u1", Name: "x", Prompt: "x", Status: model.StatusSuccess})
+	e.store.Add(model.Project{ID: "p9", OwnerID: "u1", Name: "x", Prompt: "x", Status: model.StatusSuccess})
 	finish(t, e.runAsync(context.Background(), "p9"))
-	if e.host.count("create") != 0 || e.store.get("p9").Status != model.StatusSuccess {
+	if e.host.count("create") != 0 || e.store.Get("p9").Status != model.StatusSuccess {
 		t.Fatal("Run touched a project that is not pending")
 	}
 }
@@ -630,10 +519,10 @@ func TestOrchestrator_AlreadyStartedProjectIsLeftAlone(t *testing.T) {
 // RepoOnly (step 1 demo): only GitHub is needed, the run stops after the repo exists.
 func TestOrchestrator_RepoOnly(t *testing.T) {
 	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.RepoOnly = true })
-	delete(e.ints.rows, "u1|gcp") // no GCP integration at all
+	delete(e.ints.Rows, "u1|gcp") // no GCP integration at all
 	e.o.Run(context.Background(), "p1")
 
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusSuccess || p.CurrentStep != model.StepRepoCreated || p.RepoURL == "" {
 		t.Fatalf("got status=%s step=%s repo=%q", p.Status, p.CurrentStep, p.RepoURL)
 	}
@@ -645,18 +534,18 @@ func TestOrchestrator_RepoOnly(t *testing.T) {
 // Demo mode: full flow without GCP, ends as success once the approved PR is merged.
 func TestOrchestrator_Demo(t *testing.T) {
 	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.Demo = true })
-	delete(e.ints.rows, "u1|gcp")
+	delete(e.ints.Rows, "u1|gcp")
 	done := e.runAsync(context.Background(), "p1")
 
 	e.waitStatus("p1", model.StatusWaitingForApproval)
-	if p := e.store.get("p1"); p.PRURL == "" || p.RepoURL == "" || p.CurrentStep != model.StepTestsPassed {
+	if p := e.store.Get("p1"); p.PRURL == "" || p.RepoURL == "" || p.CurrentStep != model.StepTestsPassed {
 		t.Fatalf("project at gate: %+v", p)
 	}
 	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	if p := e.store.get("p1"); p.Status != model.StatusSuccess || p.ErrorMessage != "" {
+	if p := e.store.Get("p1"); p.Status != model.StatusSuccess || p.ErrorMessage != "" {
 		t.Fatalf("final project: %+v", p)
 	}
 	if e.host.count("merge") != 1 {
@@ -696,12 +585,12 @@ func newDeployOrc(t *testing.T, fd *fakeDeployer) *orcEnv {
 	t.Helper()
 	e := newOrc(t, nil, func(c *service.OrchestratorConfig) { c.Deployer = fd })
 	fd.rec = e.host.rec
-	delete(e.ints.rows, "u1|gcp") // the platform's GCP is used, not the user's
+	delete(e.ints.Rows, "u1|gcp") // the platform's GCP is used, not the user's
 	return e
 }
 
 func TestOrchestrator_Deploy_PreparesBeforeRepo(t *testing.T) {
-	fd := &fakeDeployer{creds: gcpCreds}
+	fd := &fakeDeployer{creds: testutil.GCPCreds}
 	e := newDeployOrc(t, fd)
 	e.runAsync(context.Background(), "p1")
 	e.waitStatus("p1", model.StatusWaitingForApproval)
@@ -709,7 +598,7 @@ func TestOrchestrator_Deploy_PreparesBeforeRepo(t *testing.T) {
 	if len(e.host.calls) < 2 || e.host.calls[0] != "prepare" || e.host.calls[1] != "create" {
 		t.Fatalf("call order = %v, want prepare then create", e.host.calls)
 	}
-	if e.host.createGCP != gcpCreds {
+	if e.host.createGCP != testutil.GCPCreds {
 		t.Fatalf("CreateRepo got %+v, want the deployer's creds", e.host.createGCP)
 	}
 	name := service.ServiceName("My App", "p1")
@@ -722,14 +611,14 @@ func TestOrchestrator_Deploy_PreparesBeforeRepo(t *testing.T) {
 }
 
 func TestOrchestrator_Deploy_EndsWaitingForWebhook(t *testing.T) {
-	e := newDeployOrc(t, &fakeDeployer{creds: gcpCreds})
+	e := newDeployOrc(t, &fakeDeployer{creds: testutil.GCPCreds})
 	done := e.runAsync(context.Background(), "p1")
 	e.waitStatus("p1", model.StatusWaitingForApproval)
 	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.LiveURL != "" || p.ErrorMessage != "" {
 		t.Fatalf("after merge: %+v (the webhook, not the orchestrator, must finish a deploy)", p)
 	}
@@ -741,7 +630,7 @@ func TestOrchestrator_Deploy_EndsWaitingForWebhook(t *testing.T) {
 func TestOrchestrator_Deploy_PrepareFailure(t *testing.T) {
 	e := newDeployOrc(t, &fakeDeployer{err: errors.New("iam denied")})
 	e.o.Run(context.Background(), "p1")
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "prepare") || !strings.Contains(p.ErrorMessage, "iam denied") {
 		t.Fatalf("project: %+v", p)
 	}
@@ -753,7 +642,7 @@ func TestOrchestrator_Deploy_PrepareFailure(t *testing.T) {
 // ---- manual re-deploy ----
 
 func addDeployed(e *orcEnv, id, owner, status, step string) {
-	e.store.add(model.Project{ID: id, OwnerID: owner, Name: "x", Prompt: "x", Status: status, CurrentStep: step,
+	e.store.Add(model.Project{ID: id, OwnerID: owner, Name: "x", Prompt: "x", Status: status, CurrentStep: step,
 		RepoURL: "https://github.com/acme/x", ErrorMessage: "old error"})
 }
 
@@ -769,7 +658,7 @@ func TestOrchestrator_Redeploy_FromSuccessAndFailedAfterMerge(t *testing.T) {
 		if err := e.o.Redeploy(context.Background(), "r1", "u1"); err != nil {
 			t.Fatalf("%s/%s: %v", tc.status, tc.step, err)
 		}
-		p := e.store.get("r1")
+		p := e.store.Get("r1")
 		if p.Status != model.StatusDeploying || p.CurrentStep != model.StepMerged || p.ErrorMessage != "" {
 			t.Fatalf("%s/%s: project %+v", tc.status, tc.step, p)
 		}
@@ -794,11 +683,11 @@ func TestOrchestrator_Redeploy_Refusals(t *testing.T) {
 		fd := &fakeDeployer{}
 		e := newDeployOrc(t, fd)
 		addDeployed(e, "r1", "u1", tc.status, tc.step)
-		before := e.store.get("r1")
+		before := e.store.Get("r1")
 		if err := e.o.Redeploy(context.Background(), "r1", tc.owner); !errors.Is(err, tc.want) {
 			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
 		}
-		if len(fd.triggers) != 0 || e.store.get("r1") != before {
+		if len(fd.triggers) != 0 || e.store.Get("r1") != before {
 			t.Errorf("%s: project changed or trigger called", tc.name)
 		}
 	}
@@ -817,14 +706,14 @@ func TestOrchestrator_Redeploy_TriggerFailureMarksFailed(t *testing.T) {
 	if err := e.o.Redeploy(context.Background(), "r1", "u1"); err == nil {
 		t.Fatal("trigger error must be returned")
 	}
-	if p := e.store.get("r1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "dispatch refused") {
+	if p := e.store.Get("r1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "dispatch refused") {
 		t.Fatalf("project: %+v", p)
 	}
 }
 
 // A merge that fails leaves nothing deployable: a re-deploy must be refused, not run an empty main.
 func TestOrchestrator_Deploy_MergeFailureIsNotRedeployable(t *testing.T) {
-	fd := &fakeDeployer{creds: gcpCreds}
+	fd := &fakeDeployer{creds: testutil.GCPCreds}
 	e := newDeployOrc(t, fd)
 	e.host.mergeEr = errors.New("conflict")
 	done := e.runAsync(context.Background(), "p1")
@@ -833,7 +722,7 @@ func TestOrchestrator_Deploy_MergeFailureIsNotRedeployable(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	p := e.store.get("p1")
+	p := e.store.Get("p1")
 	if p.Status != model.StatusFailed || p.CurrentStep != model.StepMerging {
 		t.Fatalf("after a failed merge: %+v", p)
 	}
@@ -855,21 +744,21 @@ func newPollingOrc(t *testing.T, fd *fakeDeployer, w service.RunWatcher) *orcEnv
 		c.Monitor = service.DeployMonitorConfig{Poll: time.Millisecond, StartTimeout: time.Second, Timeout: 5 * time.Second}
 	})
 	fd.rec = e.host.rec
-	delete(e.ints.rows, "u1|gcp")
+	delete(e.ints.Rows, "u1|gcp")
 	return e
 }
 
 var okRun = service.DeployRun{Found: true, CreatedAt: time.Now(), Done: true, Conclusion: "success", Step: model.StepDeploying, LiveURL: "https://x-1.a.run.app"}
 
 func TestOrchestrator_Polling_FinishesProjectAfterMerge(t *testing.T) {
-	e := newPollingOrc(t, &fakeDeployer{creds: gcpCreds}, &scriptedWatcher{results: []service.DeployRun{{}, okRun}})
+	e := newPollingOrc(t, &fakeDeployer{creds: testutil.GCPCreds}, &scriptedWatcher{results: []service.DeployRun{{}, okRun}})
 	done := e.runAsync(context.Background(), "p1")
 	e.waitStatus("p1", model.StatusWaitingForApproval)
 	if err := e.o.Approve(context.Background(), "p1", "u1"); err != nil {
 		t.Fatal(err)
 	}
 	finish(t, done)
-	if p := e.store.get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x-1.a.run.app" {
+	if p := e.store.Get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x-1.a.run.app" {
 		t.Fatalf("project = %+v", p)
 	}
 }
@@ -881,7 +770,7 @@ func TestOrchestrator_Polling_RedeployFollowsTheNewRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.waitStatus("r1", model.StatusSuccess)
-	if p := e.store.get("r1"); p.LiveURL != "https://x-1.a.run.app" || p.ErrorMessage != "" {
+	if p := e.store.Get("r1"); p.LiveURL != "https://x-1.a.run.app" || p.ErrorMessage != "" {
 		t.Fatalf("project = %+v", p)
 	}
 }

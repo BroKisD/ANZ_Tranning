@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -154,10 +155,10 @@ func TestLive_Deploy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := testKey(5)
-	store := &memStore{projects: map[string]*model.Project{}}
-	ints := &memIntegrations{rows: map[string]model.UserIntegration{}}
-	ints.put(t, key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: owner, Token: token})
+	key := testutil.TestKey(5)
+	store := testutil.NewMemStore()
+	ints := testutil.NewMemIntegrations()
+	ints.Put(t, key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: owner, Token: token})
 	orch := service.NewOrchestrator(store, ints, gh, gen, nil, service.OrchestratorConfig{
 		MasterKey: key, Deployer: deployer, StageTimeout: 5 * time.Minute, ApprovalTimeout: 10 * time.Minute,
 	})
@@ -170,7 +171,7 @@ func TestLive_Deploy(t *testing.T) {
 	// ---- the user's request ----
 	const id = "deploy-live-1"
 	name := "Live Demo " + time.Now().Format("150405")
-	store.add(model.Project{ID: id, OwnerID: "u1", Name: name, Prompt: "deploy a copy of this app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
+	store.Add(model.Project{ID: id, OwnerID: "u1", Name: name, Prompt: "deploy a copy of this app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
 	t.Logf("STEP 1  request saved: project %q (status=pending)", name)
 	if err := orch.Start(id); err != nil {
 		t.Fatal(err)
@@ -184,7 +185,7 @@ func TestLive_Deploy(t *testing.T) {
 	last := ""
 	waitFor := func(want string) model.Project {
 		for ctx.Err() == nil {
-			p := store.get(id)
+			p := store.Get(id)
 			if cur := p.Status + "|" + p.CurrentStep; cur != last {
 				last = cur
 				msg := say[p.CurrentStep]
@@ -216,7 +217,7 @@ func TestLive_Deploy(t *testing.T) {
 	p = waitFor(model.StatusDeploying)
 	for p.CurrentStep != model.StepMerged && ctx.Err() == nil {
 		time.Sleep(200 * time.Millisecond)
-		p = store.get(id)
+		p = store.Get(id)
 	}
 	t.Logf("%s", say[model.StepMerged])
 

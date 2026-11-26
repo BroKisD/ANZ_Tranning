@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
 	"errors"
 	"strings"
@@ -37,10 +38,10 @@ func (w *scriptedWatcher) DeployRun(_ context.Context, _ model.GitHubCreds, _ st
 	return w.results[i], err
 }
 
-func newMonitor(t *testing.T, w service.RunWatcher) (*service.DeployMonitor, *memStore) {
+func newMonitor(t *testing.T, w service.RunWatcher) (*service.DeployMonitor, *testutil.MemStore) {
 	t.Helper()
-	st := &memStore{projects: map[string]*model.Project{}}
-	st.add(model.Project{ID: "p1", Status: model.StatusDeploying, CurrentStep: model.StepMerged})
+	st := testutil.NewMemStore()
+	st.Add(model.Project{ID: "p1", Status: model.StatusDeploying, CurrentStep: model.StepMerged})
 	m := service.NewDeployMonitor(st, w, service.DeployMonitorConfig{
 		Poll: time.Millisecond, StartTimeout: 80 * time.Millisecond, Timeout: 2 * time.Second,
 	})
@@ -65,12 +66,12 @@ func TestDeployMonitor_ProgressThenSuccess(t *testing.T) {
 	m, st := newMonitor(t, w)
 	watch(m)
 
-	p := st.get("p1")
+	p := st.Get("p1")
 	if p.Status != model.StatusSuccess || p.LiveURL != "https://x-1.a.run.app" {
 		t.Fatalf("project = %+v", p)
 	}
 	want := []string{"deploying|building", "deploying|testing", "deploying|deploying", "success|deploying"}
-	if got := st.hist(); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got := st.Hist(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("writes = %v, want %v", got, want)
 	}
 	if !w.sinces[0].Equal(time.Unix(1000, 0)) {
@@ -85,7 +86,7 @@ func TestDeployMonitor_FailureNamesTheStage(t *testing.T) {
 		}}
 		m, st := newMonitor(t, w)
 		watch(m)
-		p := st.get("p1")
+		p := st.Get("p1")
 		name := stage
 		if name == "" {
 			name = "setup"
@@ -99,7 +100,7 @@ func TestDeployMonitor_FailureNamesTheStage(t *testing.T) {
 func TestDeployMonitor_NoRunStartedFails(t *testing.T) {
 	m, st := newMonitor(t, &scriptedWatcher{results: []service.DeployRun{{}}})
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "did not start") {
+	if p := st.Get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "did not start") {
 		t.Fatalf("project = %+v", p)
 	}
 }
@@ -112,7 +113,7 @@ func TestDeployMonitor_CancelledRunFollowsTheNewerOne(t *testing.T) {
 	}}
 	m, st := newMonitor(t, w)
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusSuccess {
+	if p := st.Get("p1"); p.Status != model.StatusSuccess {
 		t.Fatalf("project = %+v", p)
 	}
 	if !w.sinces[1].After(t0) {
@@ -127,7 +128,7 @@ func TestDeployMonitor_CancelledWithNoReplacementFails(t *testing.T) {
 	}}
 	m, st := newMonitor(t, w)
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "cancelled") {
+	if p := st.Get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, "cancelled") {
 		t.Fatalf("project = %+v", p)
 	}
 }
@@ -139,7 +140,7 @@ func TestDeployMonitor_SuccessWithoutValidURLFails(t *testing.T) {
 		}}
 		m, st := newMonitor(t, w)
 		watch(m)
-		if p := st.get("p1"); p.Status != model.StatusFailed || p.LiveURL != "" {
+		if p := st.Get("p1"); p.Status != model.StatusFailed || p.LiveURL != "" {
 			t.Fatalf("url %q: project = %+v", u, p)
 		}
 	}
@@ -152,18 +153,18 @@ func TestDeployMonitor_ToleratesTransientErrors(t *testing.T) {
 	}
 	m, st := newMonitor(t, w)
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusSuccess {
+	if p := st.Get("p1"); p.Status != model.StatusSuccess {
 		t.Fatalf("project = %+v", p)
 	}
 }
 
 func TestDeployMonitor_TimeoutFails(t *testing.T) {
-	st := &memStore{projects: map[string]*model.Project{}}
-	st.add(model.Project{ID: "p1", Status: model.StatusDeploying, CurrentStep: model.StepMerged})
+	st := testutil.NewMemStore()
+	st.Add(model.Project{ID: "p1", Status: model.StatusDeploying, CurrentStep: model.StepMerged})
 	m := service.NewDeployMonitor(st, &scriptedWatcher{results: []service.DeployRun{{Found: true, CreatedAt: t0, Step: model.StepBuilding}}},
 		service.DeployMonitorConfig{Poll: time.Millisecond, StartTimeout: time.Second, Timeout: 50 * time.Millisecond})
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, service.WatchdogFailurePrefix) {
+	if p := st.Get("p1"); p.Status != model.StatusFailed || !strings.Contains(p.ErrorMessage, service.WatchdogFailurePrefix) {
 		t.Fatalf("project = %+v", p)
 	}
 }
@@ -180,7 +181,7 @@ func TestDeployMonitor_ContextCancelLeavesProjectAlone(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not stop on cancel")
 	}
-	if p := st.get("p1"); p.Status != model.StatusDeploying {
+	if p := st.Get("p1"); p.Status != model.StatusDeploying {
 		t.Fatalf("a shutdown must not fail the project (the watchdog handles it): %+v", p)
 	}
 }
@@ -188,9 +189,9 @@ func TestDeployMonitor_ContextCancelLeavesProjectAlone(t *testing.T) {
 func TestDeployMonitor_DoesNotOverwriteAFinishedProject(t *testing.T) {
 	w := &scriptedWatcher{results: []service.DeployRun{{Found: true, CreatedAt: t0, Done: true, Conclusion: "failure", FailedStage: "build"}}}
 	m, st := newMonitor(t, w)
-	st.projects["p1"].Status = model.StatusSuccess
+	st.Projects["p1"].Status = model.StatusSuccess
 	watch(m)
-	if p := st.get("p1"); p.Status != model.StatusSuccess || p.ErrorMessage != "" {
+	if p := st.Get("p1"); p.Status != model.StatusSuccess || p.ErrorMessage != "" {
 		t.Fatalf("project = %+v", p)
 	}
 }

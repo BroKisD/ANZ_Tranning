@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -42,7 +43,7 @@ func postHook(t *testing.T, s *httptest.Server, secret string, payload any) (int
 func deployingProj(t *testing.T) (*projAPI, string) {
 	t.Helper()
 	a := newProjAPI(t, true)
-	a.store.add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusDeploying, CurrentStep: model.StepDeploying})
+	a.store.Add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusDeploying, CurrentStep: model.StepDeploying})
 	return a, helper.WebhookSecretFor(rootSecret, "p1")
 }
 
@@ -51,7 +52,7 @@ func TestWebhook_SuccessAndFailure(t *testing.T) {
 	if code, body := postHook(t, a.srv, secret, map[string]string{"project_id": "p1", "status": "success", "live_url": "https://x.a.run.app"}); code != 200 {
 		t.Fatalf("success: %d %s", code, body)
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.a.run.app" {
+	if p := a.store.Get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.a.run.app" {
 		t.Fatalf("project: %+v", p)
 	}
 
@@ -59,13 +60,13 @@ func TestWebhook_SuccessAndFailure(t *testing.T) {
 	if code, _ := postHook(t, a2.srv, secret, map[string]string{"project_id": "p1", "status": "failed"}); code != 200 {
 		t.Fatalf("failed: %d", code)
 	}
-	if p := a2.store.get("p1"); p.Status != model.StatusFailed || p.ErrorMessage != "Cloud Run deployment failed" {
+	if p := a2.store.Get("p1"); p.Status != model.StatusFailed || p.ErrorMessage != "Cloud Run deployment failed" {
 		t.Fatalf("default failure message missing: %+v", p)
 	}
 
 	a3, secret := deployingProj(t)
 	postHook(t, a3.srv, secret, map[string]string{"project_id": "p1", "status": "failed", "error_message": strings.Repeat("e", 5000)})
-	if n := len(a3.store.get("p1").ErrorMessage); n != 1000 {
+	if n := len(a3.store.Get("p1").ErrorMessage); n != 1000 {
 		t.Fatalf("error message length = %d, want 1000", n)
 	}
 }
@@ -87,7 +88,7 @@ func TestWebhook_Authentication(t *testing.T) {
 			t.Errorf("%s: got %d, want 401", name, code)
 		}
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusDeploying {
+	if p := a.store.Get("p1"); p.Status != model.StatusDeploying {
 		t.Fatalf("unauthenticated call changed the project: %+v", p)
 	}
 	// a valid secret for an unknown project id reveals nothing before auth, then 404s
@@ -127,7 +128,7 @@ func TestWebhook_Validation(t *testing.T) {
 	if code, _ := postHook(t, a.srv, secret, []byte(`{"project_id":"p1","error_message":"`+strings.Repeat("x", 200000)+`"}`)); code != http.StatusBadRequest {
 		t.Errorf("oversized body: got %d", code)
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusDeploying {
+	if p := a.store.Get("p1"); p.Status != model.StatusDeploying {
 		t.Fatalf("invalid webhook changed the project: %+v", p)
 	}
 }
@@ -146,22 +147,22 @@ func TestWebhook_IdempotentAndStateGuard(t *testing.T) {
 	if code, _ := postHook(t, a.srv, secret, map[string]string{"project_id": "p1", "status": "failed"}); code != http.StatusConflict {
 		t.Fatalf("conflicting result: got %d, want 409", code)
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.run.app" {
+	if p := a.store.Get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.run.app" {
 		t.Fatalf("terminal state overwritten: %+v", p)
 	}
 
 	// a project that is not deploying yet cannot be finished by a webhook
-	a.store.add(model.Project{ID: "p2", OwnerID: "u1", Status: model.StatusWaitingForApproval})
+	a.store.Add(model.Project{ID: "p2", OwnerID: "u1", Status: model.StatusWaitingForApproval})
 	if code, _ := postHook(t, a.srv, helper.WebhookSecretFor(rootSecret, "p2"), map[string]string{"project_id": "p2", "status": "success", "live_url": "https://x.run.app"}); code != http.StatusConflict {
 		t.Fatalf("webhook before deploy: got %d, want 409", code)
 	}
-	if a.store.get("p2").Status != model.StatusWaitingForApproval {
+	if a.store.Get("p2").Status != model.StatusWaitingForApproval {
 		t.Fatal("project skipped the approval gate via webhook")
 	}
 }
 
 func TestWebhook_Construction(t *testing.T) {
-	if _, err := handler.NewWebhookHandler(&memStore{}, ""); err == nil {
+	if _, err := handler.NewWebhookHandler(testutil.NewMemStore(), ""); err == nil {
 		t.Fatal("empty webhook secret must be rejected (an empty secret would authenticate anyone)")
 	}
 }
@@ -184,7 +185,7 @@ func TestWebhookSecretFor(t *testing.T) {
 func mergedProj(t *testing.T, step string) (*projAPI, string) {
 	t.Helper()
 	a := newProjAPI(t, true)
-	a.store.add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusDeploying, CurrentStep: step})
+	a.store.Add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusDeploying, CurrentStep: step})
 	return a, helper.WebhookSecretFor(rootSecret, "p1")
 }
 
@@ -194,7 +195,7 @@ func TestWebhook_ProgressForward(t *testing.T) {
 		if code, body := postHook(t, a.srv, secret, map[string]string{"project_id": "p1", "step": step}); code != http.StatusOK {
 			t.Fatalf("step %s: %d %s", step, code, body)
 		}
-		if p := a.store.get("p1"); p.CurrentStep != step || p.Status != model.StatusDeploying {
+		if p := a.store.Get("p1"); p.CurrentStep != step || p.Status != model.StatusDeploying {
 			t.Fatalf("after %s: status=%s step=%s", step, p.Status, p.CurrentStep)
 		}
 	}
@@ -209,19 +210,19 @@ func TestWebhook_ProgressNeverBackwards(t *testing.T) {
 	if code, _ := postHook(t, a.srv, secret, map[string]string{"project_id": "p1", "step": "testing"}); code != http.StatusOK { // repeat
 		t.Fatalf("repeated event: %d", code)
 	}
-	if p := a.store.get("p1"); p.CurrentStep != model.StepTesting {
+	if p := a.store.Get("p1"); p.CurrentStep != model.StepTesting {
 		t.Fatalf("step moved backwards to %s", p.CurrentStep)
 	}
 }
 
 func TestWebhook_ProgressIgnoredWhenNotDeploying(t *testing.T) {
 	a := newProjAPI(t, true)
-	a.store.add(model.Project{ID: "p2", OwnerID: "u1", Status: model.StatusWaitingForApproval, CurrentStep: model.StepTestsPassed})
+	a.store.Add(model.Project{ID: "p2", OwnerID: "u1", Status: model.StatusWaitingForApproval, CurrentStep: model.StepTestsPassed})
 	code, _ := postHook(t, a.srv, helper.WebhookSecretFor(rootSecret, "p2"), map[string]string{"project_id": "p2", "step": "building"})
 	if code != http.StatusConflict {
 		t.Fatalf("progress before deploy: got %d, want 409", code)
 	}
-	if p := a.store.get("p2"); p.Status != model.StatusWaitingForApproval || p.CurrentStep != model.StepTestsPassed {
+	if p := a.store.Get("p2"); p.Status != model.StatusWaitingForApproval || p.CurrentStep != model.StepTestsPassed {
 		t.Fatalf("project changed: %+v", p)
 	}
 	if code, _ := postHook(t, a.srv, helper.WebhookSecretFor(rootSecret, "nope"), map[string]string{"project_id": "nope", "step": "building"}); code != http.StatusNotFound {
@@ -242,7 +243,7 @@ func TestWebhook_ProgressBadStepAndAuth(t *testing.T) {
 	if code, _ := postHook(t, a.srv, helper.WebhookSecretFor(rootSecret, "p9"), map[string]string{"project_id": "p1", "step": "building"}); code != http.StatusUnauthorized {
 		t.Errorf("another project's secret: got %d", code)
 	}
-	if p := a.store.get("p1"); p.CurrentStep != model.StepMerging {
+	if p := a.store.Get("p1"); p.CurrentStep != model.StepMerging {
 		t.Fatalf("rejected events changed the project: %+v", p)
 	}
 }
@@ -250,7 +251,7 @@ func TestWebhook_ProgressBadStepAndAuth(t *testing.T) {
 func failedProj(t *testing.T, msg string) (*projAPI, string) {
 	t.Helper()
 	a := newProjAPI(t, true)
-	a.store.add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusFailed, CurrentStep: model.StepBuilding, ErrorMessage: msg})
+	a.store.Add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: model.StatusFailed, CurrentStep: model.StepBuilding, ErrorMessage: msg})
 	return a, helper.WebhookSecretFor(rootSecret, "p1")
 }
 
@@ -261,7 +262,7 @@ func TestWebhook_SuccessRecoversWatchdogFailure(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("late success: %d %s", code, body)
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.run.app" || p.ErrorMessage != "" {
+	if p := a.store.Get("p1"); p.Status != model.StatusSuccess || p.LiveURL != "https://x.run.app" || p.ErrorMessage != "" {
 		t.Fatalf("project: %+v", p)
 	}
 }
@@ -271,7 +272,7 @@ func TestWebhook_SuccessDoesNotOverrideRealFailure(t *testing.T) {
 	if code, _ := postHook(t, a.srv, secret, map[string]string{"project_id": "p1", "status": "success", "live_url": "https://x.run.app"}); code != http.StatusConflict {
 		t.Fatalf("success after a real failure: got %d, want 409", code)
 	}
-	if p := a.store.get("p1"); p.Status != model.StatusFailed {
+	if p := a.store.Get("p1"); p.Status != model.StatusFailed {
 		t.Fatalf("a real failure was overwritten: %+v", p)
 	}
 }

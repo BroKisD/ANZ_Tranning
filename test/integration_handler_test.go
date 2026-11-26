@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -59,7 +60,7 @@ func (f *fakeSecrets) PutSecret(_ context.Context, id, v string) (string, error)
 
 func newIntegrationServer(t *testing.T, st *fakeIntegrationStore, sec handler.SecretStore) *httptest.Server {
 	t.Helper()
-	h := handler.NewIntegrationHandler(st, sec, testKey(9), handler.HeaderUserID, func(_ context.Context, token string) (string, error) {
+	h := handler.NewIntegrationHandler(st, sec, testutil.TestKey(9), handler.HeaderUserID, func(_ context.Context, token string) (string, error) {
 		if token != "ghp_good" {
 			return "", errors.New("bad credentials")
 		}
@@ -103,7 +104,7 @@ func decryptRow(t *testing.T, st *fakeIntegrationStore, user, provider string, i
 	if !ok {
 		t.Fatalf("no %s row for %s", provider, user)
 	}
-	plain, err := crypto.Decrypt(testKey(9), row.EncryptedCredentials)
+	plain, err := crypto.Decrypt(testutil.TestKey(9), row.EncryptedCredentials)
 	if err != nil {
 		t.Fatal(err)
 	}

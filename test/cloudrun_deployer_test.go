@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
 	"errors"
 	"strings"
@@ -46,10 +47,10 @@ func (d *fakeDispatcher) DispatchWorkflow(_ context.Context, gh model.GitHubCred
 }
 
 func TestCloudRunDeployer_PrepareOrder(t *testing.T) {
-	b := &fakeBinder{creds: gcpCreds}
+	b := &fakeBinder{creds: testutil.GCPCreds}
 	d := service.NewCloudRunDeployer(b, &fakeDispatcher{})
 	got, err := d.Prepare(context.Background(), service.DeployTarget{ProjectID: "p1", ServiceName: "my-app-1a2b", RepoOwner: "acme", RepoName: "my-app-1a2b"})
-	if err != nil || got != gcpCreds {
+	if err != nil || got != testutil.GCPCreds {
 		t.Fatalf("creds = %+v, %v", got, err)
 	}
 	if strings.Join(b.calls, ",") != "ensure,bind:acme/my-app-1a2b" {

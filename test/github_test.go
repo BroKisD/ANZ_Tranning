@@ -1,6 +1,7 @@
 package test
 
 import (
+	"anz-training/internal/testutil"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -163,12 +164,7 @@ func newGH(t *testing.T, f *fakeGitHub, gitURL string) *service.GitHub {
 var gcpEmpty = model.GCPCreds{}
 
 var (
-	ghCreds  = model.GitHubCreds{Owner: "acme", Token: fakeToken}
-	gcpCreds = model.GCPCreds{
-		ProjectID: "my-proj", Region: "asia-southeast1", ArtifactRepo: "ai-apps",
-		WIFProvider:    "projects/1/locations/global/workloadIdentityPools/p/providers/gh",
-		ServiceAccount: "deployer@my-proj.iam.gserviceaccount.com",
-	}
+	ghCreds = model.GitHubCreds{Owner: "acme", Token: fakeToken}
 )
 
 func TestGitHub_TokenOwner(t *testing.T) {
@@ -247,7 +243,7 @@ func TestGitHub_CreateRepo_Org(t *testing.T) {
 	f.contentFails = 2 // main not ready yet: must retry
 	g := newGH(t, f, "")
 
-	url, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "1234abcd-0000-4000-8000-000000000000", "My App")
+	url, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "1234abcd-0000-4000-8000-000000000000", "My App")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +269,7 @@ func TestGitHub_CreateRepo_PersonalAccountAndErrors(t *testing.T) {
 	f := newFakeGitHub(t)
 	f.accountType = "User"
 	g := newGH(t, f, "")
-	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "id-1", "x"); err != nil {
+	if _, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "id-1", "x"); err != nil {
 		t.Fatal(err)
 	}
 	if !f.called("POST /user/repos") {
@@ -283,7 +279,7 @@ func TestGitHub_CreateRepo_PersonalAccountAndErrors(t *testing.T) {
 	// invalid GCP config never reaches GitHub
 	f2 := newFakeGitHub(t)
 	g2 := newGH(t, f2, "")
-	bad := gcpCreds
+	bad := testutil.GCPCreds
 	bad.WIFProvider = "x' && rm -rf / #"
 	if _, err := g2.CreateRepo(context.Background(), ghCreds, bad, "id-1", "x"); err == nil {
 		t.Fatal("expected validation error")
@@ -520,7 +516,7 @@ func TestGitHub_DispatchWorkflow(t *testing.T) {
 func TestGitHub_CreateRepo_CommitsIaC(t *testing.T) {
 	f := newFakeGitHub(t)
 	g := newGH(t, f, "")
-	creds := gcpCreds
+	creds := testutil.GCPCreds
 	creds.RuntimeServiceAccount = runtimeSA
 	if _, err := g.CreateRepo(context.Background(), ghCreds, creds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
 		t.Fatal(err)
@@ -576,7 +572,7 @@ func TestGitHub_CreateRepo_ConfiguresActionsVarsAndSecret(t *testing.T) {
 	f := newFakeGitHub(t)
 	g := newGH(t, f, "")
 	const projectID = "1234abcd-0000-4000-8000-000000000000"
-	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, projectID, "My App"); err != nil {
+	if _, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, projectID, "My App"); err != nil {
 		t.Fatal(err)
 	}
 	base := "/repos/acme/my-app-1234abcd/actions/"
@@ -588,8 +584,8 @@ func TestGitHub_CreateRepo_ConfiguresActionsVarsAndSecret(t *testing.T) {
 		got[v["name"].(string)] = v["value"].(string)
 	}
 	want := map[string]string{
-		"GCP_PROJECT_ID": gcpCreds.ProjectID, "GCP_REGION": gcpCreds.Region, "GCP_ARTIFACT_REPO": gcpCreds.ArtifactRepo,
-		"GCP_WIF_PROVIDER": gcpCreds.WIFProvider, "GCP_SERVICE_ACCOUNT": gcpCreds.ServiceAccount,
+		"GCP_PROJECT_ID": testutil.GCPCreds.ProjectID, "GCP_REGION": testutil.GCPCreds.Region, "GCP_ARTIFACT_REPO": testutil.GCPCreds.ArtifactRepo,
+		"GCP_WIF_PROVIDER": testutil.GCPCreds.WIFProvider, "GCP_SERVICE_ACCOUNT": testutil.GCPCreds.ServiceAccount,
 		"WEBHOOK_URL": "https://builder.example.com/api/webhooks/github",
 	}
 	for k, v := range want {
@@ -611,7 +607,7 @@ func TestGitHub_CreateRepo_ConfiguresActionsVarsAndSecret(t *testing.T) {
 	// nothing configurable or secret is committed in the workflow
 	put := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/.github/workflows/deploy.yml"]
 	raw, _ := base64.StdEncoding.DecodeString(put["content"].(string))
-	for _, lit := range []string{string(plain), gcpCreds.WIFProvider, gcpCreds.ServiceAccount, gcpCreds.ProjectID, "https://builder.example.com"} {
+	for _, lit := range []string{string(plain), testutil.GCPCreds.WIFProvider, testutil.GCPCreds.ServiceAccount, testutil.GCPCreds.ProjectID, "https://builder.example.com"} {
 		if strings.Contains(string(raw), lit) {
 			t.Errorf("workflow still contains literal %q", lit)
 		}
@@ -621,7 +617,7 @@ func TestGitHub_CreateRepo_ConfiguresActionsVarsAndSecret(t *testing.T) {
 func TestGitHub_CreateRepo_ActionsSetupFailureFailsCreate(t *testing.T) {
 	f := newFakeGitHub(t)
 	f.secretKeyStatus = 403
-	if _, err := newGH(t, f, "").CreateRepo(context.Background(), ghCreds, gcpCreds, "id-1", "x"); err == nil {
+	if _, err := newGH(t, f, "").CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "id-1", "x"); err == nil {
 		t.Fatal("a repo without its deploy secret would fail silently later; CreateRepo must return the error")
 	}
 }
@@ -723,7 +719,7 @@ func TestGitHub_DeployRun_SuccessWithoutAnnotationHasNoURL(t *testing.T) {
 func TestGitHub_CreateRepo_NoWebhookConfigured(t *testing.T) {
 	f := newFakeGitHub(t)
 	g := service.NewGitHub(service.GitHubConfig{APIURL: f.srv.URL, RetryDelay: time.Millisecond})
-	if _, err := g.CreateRepo(context.Background(), ghCreds, gcpCreds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
+	if _, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "1234abcd-0000-4000-8000-000000000000", "My App"); err != nil {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
