@@ -1,4 +1,4 @@
-package test
+package main
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ func TestMain_StandaloneWithoutDatabase(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not installed")
 	}
-	root, _ := filepath.Abs("..")
+	root, _ := filepath.Abs(".")
 	bin := filepath.Join(t.TempDir(), "app")
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = root
@@ -58,5 +58,32 @@ func TestMain_StandaloneWithoutDatabase(t *testing.T) {
 	}
 	if code, _ := get("/healthz"); code != 200 {
 		t.Fatalf("GET /healthz: %d", code)
+	}
+}
+
+func TestNoDatabaseConfigured(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"nothing set", nil, true},
+		{"user set", map[string]string{"DB_USER": "u"}, false},
+		{"host set", map[string]string{"DB_HOST": "h"}, false},
+		{"cloud sql set", map[string]string{"INSTANCE_CONNECTION_NAME": "p:r:i"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(t.TempDir()) // so a developer's .env is not loaded
+			for _, k := range []string{"DB_USER", "DB_HOST", "INSTANCE_CONNECTION_NAME"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			if got := noDatabaseConfigured(); got != tt.want {
+				t.Fatalf("noDatabaseConfigured() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

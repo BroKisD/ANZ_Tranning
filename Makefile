@@ -13,7 +13,7 @@ help:
 	@echo "  make fmt            Format Go source files"
 	@echo "  make fmt-check      Check whether Go source files are formatted"
 	@echo "  make vet            Run Go static analysis"
-	@echo "  make test           Run unit tests"
+	@echo "  make test           Run unit tests with coverage"
 	@echo "  make test-race      Run unit tests with the race detector"
 	@echo "  make integration    Run integration tests (requires Docker)"
 	@echo "  make test-all       Run unit and integration tests"
