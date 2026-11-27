@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI App Builder Demo Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+img { max-width: 100%; }
+/* Layout: one calm reading column. Report header, then sections that go from "what it does" to "what is missing".
+   Green marks what is real, amber marks what is mocked, red/amber/grey rank the gaps. */
+:root {
+  --bg: #F5F6F8;
+  --surface: #FFFFFF;
+  --surface-2: #EEF0F4;
+  --fg: #151A22;
+  --muted: #5A6473;
+  --line: #D9DEE6;
+  --accent: #2A58E0;
+  --real: #0B7A55;
+  --real-bg: #DDF3EA;
+  --mock: #9A6200;
+  --mock-bg: #FBEBCB;
+  --high: #B42E28;
+  --high-bg: #F9DEDB;
+  --code-bg: #12171F;
+  --code-fg: #E4E8EE;
+  --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1218; --surface: #161B23; --surface-2: #1D232D; --fg: #E7EAF0; --muted: #9AA4B3; --line: #2B3240;
+    --accent: #84A2FF; --real: #43D6A2; --real-bg: #12372B; --mock: #E8B65A; --mock-bg: #3A2D12;
+    --high: #FF8077; --high-bg: #43201D; --code-bg: #0A0D12; --code-fg: #E4E8EE; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1218; --surface: #161B23; --surface-2: #1D232D; --fg: #E7EAF0; --muted: #9AA4B3; --line: #2B3240;
+  --accent: #84A2FF; --real: #43D6A2; --real-bg: #12372B; --mock: #E8B65A; --mock-bg: #3A2D12;
+  --high: #FF8077; --high-bg: #43201D; --code-bg: #0A0D12; --code-fg: #E4E8EE; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(1.9rem, 5vw, 2.6rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 1.45rem; font-weight: 600; letter-spacing: -0.01em; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code, pre { font-family: var(--font-mono); font-size: 0.86em; }
+code { background: var(--surface-2); padding: 0.1em 0.38em; border-radius: 4px; overflow-wrap: anywhere; }
+.eyebrow { font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lede { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+section { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.head { display: flex; flex-direction: column; gap: 14px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--fg); white-space: nowrap; }
+.chip.real { background: var(--real-bg); color: var(--real); }
+.chip.mock { background: var(--mock-bg); color: var(--mock); }
+.chip.high { background: var(--high-bg); color: var(--high); }
+.chip.mid { background: var(--mock-bg); color: var(--mock); }
+.chip.low { background: var(--surface-2); color: var(--muted); }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.9rem; padding-top: 6px; border-top: 1px solid var(--line); }
+nav.toc a { text-decoration: none; padding: 6px 0; }
+nav.toc a:hover { text-decoration: underline; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.fact { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fact b { font-family: var(--font-display); font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.fact span { color: var(--muted); font-size: 0.86rem; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.diagram { padding: 12px 8px; }
+.diagram svg { display: block; min-width: 780px; width: 100%; height: auto; }
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { color: var(--muted); font-size: 0.88rem; max-width: 72ch; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num { color: var(--muted); font-variant-numeric: tabular-nums; width: 2.2rem; }
+.pipeline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pipeline .step { font-family: var(--font-mono); font-size: 0.78rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
+.pipeline .step.gate { border-color: var(--mock); color: var(--mock); }
+.pipeline .step.done { border-color: var(--real); color: var(--real); }
+.pipeline .arr { color: var(--muted); }
+.codeblock { position: relative; }
+pre { margin: 0; background: var(--code-bg); color: var(--code-fg); border-radius: 8px; padding: 14px 16px; overflow-x: auto; line-height: 1.55; }
+.copy { position: absolute; top: 8px; right: 8px; font: 600 0.72rem var(--font-body); background: #2A313D; color: #E4E8EE; border: 0; border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+.copy:hover { background: #3A4352; }
+.steps { display: flex; flex-direction: column; gap: 22px; }
+.stepbox { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: 4px 12px; }
+.stepbox > .n { font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 1.1rem; }
+.stepbox > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.card ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 4px; }
+.issue { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 14px 0; border-top: 1px solid var(--line); }
+.issue:first-of-type { border-top: 0; }
+.issue .err { font-family: var(--font-mono); font-size: 0.8rem; color: var(--high); overflow-wrap: anywhere; }
+ol.next { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 8px; max-width: 72ch; }
+footer { color: var(--muted); font-size: 0.84rem; border-top: 1px solid var(--line); padding-top: 18px; }
+/* diagram */
+.lifeline { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.actor { fill: var(--surface-2); stroke: var(--line); }
+.actor-text { fill: var(--fg); font: 600 12.5px var(--font-body); text-anchor: middle; }
+.msg { stroke: var(--fg); stroke-width: 1.5; fill: none; }
+.msg.back { stroke-dasharray: 5 4; }
+.msg-text { fill: var(--fg); font: 500 12px var(--font-body); text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; stroke-linejoin: round; }
+.note { fill: var(--mock-bg); stroke: var(--mock); stroke-dasharray: 4 3; }
+.note-text { fill: var(--mock); font: 600 12px var(--font-body); text-anchor: middle; }
+.gate { fill: var(--surface); stroke: var(--mock); stroke-dasharray: 4 3; }
+.legend-text { fill: var(--muted); font: 500 11.5px var(--font-body); }
+.arrowhead { fill: var(--fg); }
+@media (max-width: 560px) { body { padding-block: 24px 48px; } .wrap { gap: 44px; } th, td { padding: 9px 11px; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="head">
+  <span class="eyebrow">Demo report · 26 November 2026</span>
+  <h1>AI App Builder Demo Report</h1>
+  <p class="lede">A user's request becomes a GitHub repository, a pull request, a human approval, and a live app on Google Cloud Run. This report shows how the demo works today, how to set it up, and what stands between it and a real product.</p>
+  <div class="meta">
+    <span class="chip real">Works end to end</span>
+    <span class="chip real">Real: GitHub, Docker build, Cloud Run deploy</span>
+    <span class="chip mock">Mocked: code generation, tests</span>
+  </div>
+  <nav class="toc" aria-label="Contents">
+    <a href="#flow">Workflow</a><a href="#mock">Real and mocked</a><a href="#actions">GitHub Actions</a><a href="#setup">Setup</a><a href="#issues">Problems we hit</a><a href="#proof">Evidence</a><a href="#gaps">Gaps to a real product</a>
+  </nav>
+</header>
+
+<section id="summary">
+  <div class="facts">
+    <div class="fact"><b>1 request</b><span>to a live https URL on Cloud Run, with one approval in between</span></div>
+    <div class="fact"><b>100 passing</b><span>automated tests, race detector on; 3 live tests skip unless enabled</span></div>
+    <div class="fact"><b>0 keys</b><span>stored for Google Cloud: the workflow logs in with Workload Identity</span></div>
+    <div class="fact"><b>1 command</b><span>runs the whole demo and prints every step</span></div>
+  </div>
+</section>
+
+<section id="flow">
+  <h2>The happy path</h2>
+  <p>Twelve messages between five parties. The amber dashed boxes are mocked, everything else is a real call.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 960 600" role="img" aria-label="Sequence diagram: the API client creates a project, the platform creates a GitHub repo, mock-tests cloned code and opens a pull request, the client approves, the platform merges, GitHub Actions builds and deploys to Google Cloud, and reports progress back to the platform until the live URL is available.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M0 1 L10 5 L0 9 z" class="arrowhead"/>
+          </marker>
+        </defs>
+        <!-- actors -->
+        <rect class="actor" x="10" y="8" width="150" height="34" rx="6"/><text class="actor-text" x="85" y="30">API client</text>
+        <rect class="actor" x="210" y="8" width="150" height="34" rx="6"/><text class="actor-text" x="285" y="30">Platform (Cloud Run)</text>
+        <rect class="actor" x="410" y="8" width="150" height="34" rx="6"/><text class="actor-text" x="485" y="30">GitHub</text>
+        <rect class="actor" x="610" y="8" width="150" height="34" rx="6"/><text class="actor-text" x="685" y="30">GitHub Actions</text>
+        <rect class="actor" x="800" y="8" width="150" height="34" rx="6"/><text class="actor-text" x="875" y="30">Google Cloud</text>
+        <line class="lifeline" x1="85" y1="42" x2="85" y2="556"/>
+        <line class="lifeline" x1="285" y1="42" x2="285" y2="556"/>
+        <line class="lifeline" x1="485" y1="42" x2="485" y2="556"/>
+        <line class="lifeline" x1="685" y1="42" x2="685" y2="556"/>
+        <line class="lifeline" x1="875" y1="42" x2="875" y2="556"/>
+
+        <line class="msg" x1="85" y1="78" x2="283" y2="78" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="185" y="70">1  POST /api/projects</text>
+
+        <line class="msg" x1="285" y1="118" x2="483" y2="118" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="385" y="110">2  create repo, add IaC files</text>
+
+        <rect class="note" x="175" y="140" width="220" height="26" rx="5"/>
+        <text class="note-text" x="285" y="157">3  clone template · mock tests</text>
+
+        <line class="msg" x1="285" y1="206" x2="483" y2="206" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="385" y="198">4  push branch, open PR</text>
+
+        <rect class="gate" x="10" y="222" width="150" height="38" rx="5"/>
+        <text class="legend-text" x="85" y="238" text-anchor="middle">human reviews the PR</text>
+        <text class="legend-text" x="85" y="252" text-anchor="middle">(waiting_for_approval)</text>
+        <line class="msg" x1="85" y1="286" x2="283" y2="286" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="185" y="278">5  POST …/approve</text>
+
+        <line class="msg" x1="285" y1="326" x2="483" y2="326" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="385" y="318">6  squash-merge the PR</text>
+
+        <line class="msg" x1="485" y1="366" x2="683" y2="366" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="585" y="358">7  push starts the workflow</text>
+
+        <line class="msg" x1="685" y1="406" x2="873" y2="406" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="779" y="398">8  keyless login, push image</text>
+
+        <rect class="note" x="585" y="420" width="200" height="26" rx="5"/>
+        <text class="note-text" x="685" y="437">9  mock build · mock tests</text>
+
+        <line class="msg" x1="685" y1="476" x2="873" y2="476" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="779" y="468">10  deploy to Cloud Run</text>
+
+        <line class="msg" x1="683" y1="512" x2="287" y2="512" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="485" y="504">11  webhook: each stage, then success + URL</text>
+
+        <line class="msg back" x1="283" y1="548" x2="87" y2="548" marker-end="url(#arrow)"/>
+        <text class="msg-text" x="185" y="540">12  GET status: success + URL</text>
+
+        <text class="legend-text" x="10" y="584">Solid arrow: real call.  Dashed amber box: mocked step.  Dashed arrow: reply to the client.</text>
+      </svg>
+    </div>
+    <figcaption>One request, one approval. After the approval, nobody touches anything until the app is live. The platform learns about progress from the webhook calls (message 11), not by watching GitHub.</figcaption>
+  </figure>
+
+  <h3>What the API shows along the way</h3>
+  <p>Poll <code>GET /api/projects/{id}</code>. The two fields <code>status</code> and <code>current_step</code> move like this:</p>
+  <div class="pipeline" aria-label="Project states in order">
+    <span class="step">pending</span><span class="arr">→</span>
+    <span class="step">generating · repo_created</span><span class="arr">→</span>
+    <span class="step">generating · tests_passed</span><span class="arr">→</span>
+    <span class="step gate">waiting_for_approval</span><span class="arr">→</span>
+    <span class="step">deploying · merging</span><span class="arr">→</span>
+    <span class="step">deploying · merged</span><span class="arr">→</span>
+    <span class="step">deploying · building</span><span class="arr">→</span>
+    <span class="step">deploying · testing</span><span class="arr">→</span>
+    <span class="step">deploying · deploying</span><span class="arr">→</span>
+    <span class="step done">success + live_url</span>
+  </div>
+  <p>Any error ends in <code>failed</code> with an <code>error_message</code>. A deploy that goes silent for 15 minutes is failed by a watchdog.</p>
+</section>
+
+<section id="mock">
+  <h2>What is real and what is mocked</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Part</th><th>In the demo</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td>Request, database, API</td><td><span class="chip real">real</span></td><td>The request is saved in MySQL. The API, the approval gate and the status model are the real code.</td></tr>
+        <tr><td>GitHub repository, branch, pull request, merge</td><td><span class="chip real">real</span></td><td>Created with the user's personal access token. The repo is private and is created with <code>deploy.yml</code> and <code>service.yml</code>.</td></tr>
+        <tr><td>Code generation</td><td><span class="chip mock">mock</span></td><td>No AI runs. The platform clones a template repo (this one) and pushes it. The prompt is stored but unused. The Claude Code path exists in the code and has never run end to end.</td></tr>
+        <tr><td>Tests before the PR</td><td><span class="chip mock">mock</span></td><td>A 3 second pause and a log line, "tests passed".</td></tr>
+        <tr><td>Build in GitHub Actions</td><td><span class="chip real">real</span> <span class="chip mock">mock</span></td><td>A mock step (3 second "compiling"), then a real <code>docker build</code> and push to Artifact Registry.</td></tr>
+        <tr><td>Tests in GitHub Actions</td><td><span class="chip mock">mock</span></td><td>Prints "12 passed" after a 3 second pause.</td></tr>
+        <tr><td>Google login from Actions</td><td><span class="chip real">real</span></td><td>Keyless, through Workload Identity Federation. No service account key exists anywhere.</td></tr>
+        <tr><td>Deploy to Cloud Run</td><td><span class="chip real">real</span></td><td><code>gcloud run services replace service.yml</code> creates a public service with its own URL.</td></tr>
+        <tr><td>Progress and result reporting</td><td><span class="chip real">real</span></td><td>The workflow posts every stage to the platform's webhook. Each repo has its own secret.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="actions">
+  <h2>Inside the GitHub Actions run</h2>
+  <p>The repo's <code>deploy.yml</code> starts on a push to <code>main</code> (the PR merge) or by hand (<code>workflow_dispatch</code>, used for re-deploys). A newer run cancels an older one for the same repo.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Job step</th><th>Does</th><th>Tells the platform</th></tr></thead>
+      <tbody>
+        <tr><td>Prepare notifier</td><td>Writes a small <code>notify</code> helper that posts JSON to the webhook. A failed post only prints a warning.</td><td>none</td></tr>
+        <tr><td>Checkout, Google auth, gcloud setup</td><td>Logs in to Google Cloud as the deploy service account, with no stored key.</td><td>none</td></tr>
+        <tr><td>Build</td><td>Mock compile, then real <code>docker build</code> and <code>docker push</code> to <code>anz-repo</code>.</td><td><code>building</code></td></tr>
+        <tr><td>Test</td><td>Mock test run.</td><td><code>testing</code></td></tr>
+        <tr><td>Deploy</td><td>Puts the image into <code>service.yml</code>, runs <code>gcloud run services replace</code>, reads the service URL. An empty URL fails the step.</td><td><code>deploying</code></td></tr>
+        <tr><td>Report result</td><td>On success sends the URL. On failure sends which stage failed.</td><td><code>success</code> + <code>live_url</code>, or <code>failed</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The infrastructure files that are committed into every new repo are <code>.github/workflows/deploy.yml</code> and <code>service.yml</code> (the Cloud Run spec). The platform restores both from the base branch before opening the PR, so generated code cannot change the pipeline.</p>
+</section>
+
+<section id="setup">
+  <h2>How to set it up</h2>
+
+  <div class="steps">
+    <div class="stepbox"><span class="n">A</span>
+      <div>
+        <h3>GitHub</h3>
+        <div class="cols">
+          <div class="card"><b>Personal access token</b>
+            <ul><li>Classic token with the <code>repo</code> and <code>workflow</code> scopes. <code>workflow</code> is needed to commit the deploy workflow into a new repo.</li>
+            <li>The platform stores it encrypted (AES-256-GCM) per user.</li></ul></div>
+          <div class="card"><b>The code to deploy</b>
+            <ul><li>The demo clones this repo (<code>DEMO_TEMPLATE_REPO</code>). It must be public, and your latest changes must be pushed to <code>main</code>.</li>
+            <li>No GitHub App is needed.</li></ul></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stepbox"><span class="n">B</span>
+      <div>
+        <h3>Google Cloud (one time)</h3>
+        <p>Project <code>project-9991dcfb-85ec-4182-b68</code>, region <code>asia-southeast1</code>, Artifact Registry repo <code>anz-repo</code>, deploy service account <code>anz-trainning@…</code> (the one the existing CI/CD already uses).</p>
+        <p>The commands below assume <code>P=project-9991dcfb-85ec-4182-b68</code>.</p>
+        <p>1. Let the Workload Identity provider accept every repo of the GitHub account, not only one repo:</p>
+        <div class="codeblock"><button class="copy" type="button">Copy</button><pre>gcloud iam workload-identity-pools providers update-oidc github-provider \
+  --project=$P --location=global --workload-identity-pool=github-pool \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.actor=assertion.actor" \
+  --attribute-condition="assertion.repository_owner=='BroKisD'"</pre></div>
+        <p>2. Let those repos impersonate the deploy service account:</p>
+        <div class="codeblock"><button class="copy" type="button">Copy</button><pre>gcloud iam service-accounts add-iam-policy-binding \
+  anz-trainning@$P.iam.gserviceaccount.com \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/386127327935/locations/global/workloadIdentityPools/github-pool/attribute.repository_owner/BroKisD"</pre></div>
+        <p>3. Create the webhook secret the platform reads, and let its service account access it:</p>
+        <div class="codeblock"><button class="copy" type="button">Copy</button><pre>openssl rand -hex 32 | gcloud secrets create WEBHOOK_SECRET --data-file=- --project=$P</pre></div>
+      </div>
+    </div>
+
+    <div class="stepbox"><span class="n">C</span>
+      <div>
+        <h3>The platform on Cloud Run</h3>
+        <p><code>service.yml</code> describes it and the existing <code>ci-cd.yml</code> deploys it on every push to <code>main</code>. Three settings are required by design:</p>
+        <ul style="margin:0;padding-left:1.1rem;display:flex;flex-direction:column;gap:4px;max-width:72ch">
+          <li><code>minScale: 1</code> and <code>maxScale: 1</code>, because each run lives in a background goroutine and the approval wait is held in memory.</li>
+          <li><code>cpu-throttling: "false"</code>, so that background work keeps its CPU between requests.</li>
+          <li><code>WEBHOOK_URL</code> set to the service's own address, which is predictable: <code>https://&lt;service&gt;-&lt;project number&gt;.&lt;region&gt;.run.app/api/webhooks/github</code>.</li>
+        </ul>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td><code>DEMO_TEMPLATE_REPO</code> + <code>GCP_PROJECT_ID</code></td><td>Together they switch on deploy mode.</td></tr>
+              <tr><td><code>GCP_WIF_PROVIDER</code>, <code>GCP_SERVICE_ACCOUNT</code></td><td>The deploy identity from step B. The workflow receives these two values.</td></tr>
+              <tr><td><code>GCP_ARTIFACT_REPO</code>, <code>GCP_REGION</code></td><td><code>anz-repo</code>, <code>asia-southeast1</code></td></tr>
+              <tr><td><code>WEBHOOK_URL</code>, <code>WEBHOOK_SECRET</code></td><td>Where the workflow reports. Each repo gets a secret derived from the root secret, valid for that repo only.</td></tr>
+              <tr><td><code>DEPLOY_TIMEOUT</code></td><td>Default <code>15m</code>. Silent deploys are marked failed.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="stepbox"><span class="n">D</span>
+      <div>
+        <h3>Run the demo</h3>
+        <p>One command creates a real repo, opens a PR, approves it, watches the Actions run step by step and checks that the live URL answers 200. It needs no server and no Postman.</p>
+        <div class="codeblock"><button class="copy" type="button">Copy</button><pre>LIVE_DEPLOY=1 GITHUB_TOKEN=ghp_... \
+  go test ./test -run TestLive_Deploy -v -timeout 20m</pre></div>
+        <p>To drive the deployed platform over HTTP instead, use <code>TestLive_Platform</code> with <code>PLATFORM_URL</code>, <code>API_KEY</code> and <code>GITHUB_TOKEN</code>. The manual route is: create a user, connect GitHub (<code>POST /api/integrations/github</code>), <code>POST /api/projects</code>, poll, <code>POST /api/projects/{id}/approve</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="issues">
+  <h2>Problems we hit while setting it up</h2>
+  <p>Each one is a one-time setup issue, not a code bug, and each is now written into <code>docs/deploy-setup.md</code>.</p>
+  <div>
+    <div class="issue">
+      <span class="err">The given credential is rejected by the attribute condition.</span>
+      <p>The existing provider only trusted the single repo <code>BroKisD/ANZ_Tranning</code>. Fixed by widening its condition to every repo owned by the account (step B1).</p>
+    </div>
+    <div class="issue">
+      <span class="err">Permission 'iam.serviceAccounts.getAccessToken' denied</span>
+      <p>The login worked, but the deploy service account did not trust the new repo. Fixed by the owner-wide binding (step B2).</p>
+    </div>
+    <div class="issue">
+      <span class="err">The user-provided container failed to start and listen on the port defined by PORT=8080</span>
+      <p>The demo deploys a clone of this repo, which needs a MySQL database to start, and Cloud Run has none for it. Fixed by a standalone mode: with no database settings the app serves a small status page. The fix also had to be pushed to GitHub, because the clone comes from there.</p>
+    </div>
+  </div>
+</section>
+
+<section id="proof">
+  <h2>Evidence</h2>
+  <div class="cols">
+    <div class="card"><h3>Live run</h3>
+      <p>On 25 November the full flow ran against real GitHub and Cloud Run and ended with a live app. The three setup errors above were the only failures before it.</p>
+      <p>Still to confirm: the same flow through the deployed platform's own API with the real webhook (<code>TestLive_Platform</code>), and the platform's new container image running on Cloud Run.</p></div>
+    <div class="card"><h3>Automated tests</h3>
+      <ul>
+        <li>106 test functions: 100 run by default, 3 live tests opt in, 3 database tests need Docker.</li>
+        <li>Run with the race detector, <code>go vet</code> clean.</li>
+        <li>Google Cloud and GitHub are replaced by fake servers, so the checks run without credentials.</li>
+        <li>Covered: approval gate, webhook security, forward-only status, watchdog, re-deploy rules, workflow and service file generation, IAM retry and idempotency.</li>
+      </ul></div>
+    <div class="card"><h3>Independent review</h3>
+      <p>A fresh reviewer read the whole change and reported 15 findings: 2 critical, 6 important, 7 minor. Seven were fixed with a failing test first, one is documented as an accepted limit (below), and the minor ones are deferred.</p>
+      <p>Fixed among them: apps no longer run as the platform's identity in the self-provisioning mode, a never-merged project can no longer be re-deployed, and a late success after a watchdog failure is accepted.</p></div>
+  </div>
+</section>
+
+<section id="gaps">
+  <h2>The gap to a real product</h2>
+  <p>The demo proves the pipeline. A product needs the parts below. Priority: <span class="chip high">before real users</span> <span class="chip mid">soon after</span> <span class="chip low">later</span></p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Area</th><th>Today</th><th>A real product needs</th><th>Priority</th></tr></thead>
+      <tbody>
+        <tr><td>Users and login</td><td>One shared API key, and the caller names itself in an <code>X-User-ID</code> header. Anyone with the key can act as any user.</td><td>Real sign-in (sessions or OIDC), per-user authorization on every route, rate limits.</td><td><span class="chip high">before real users</span></td></tr>
+        <tr><td>Deployment isolation</td><td>Every app is deployed by the same service account that deploys the platform, in the same Google project. A trusted repo could replace any service, including the platform. Apps run as the default compute account.</td><td>Apps in a separate Google project from the platform. A dedicated, role-less runtime account per app and a deployer limited to its own services. The self-provisioning mode already creates a role-less runtime account; the static mode used in this demo does not.</td><td><span class="chip high">before real users</span></td></tr>
+        <tr><td>Public by default</td><td>Every deployed app is open to the internet with no login.</td><td>Abuse controls for user-supplied code: review, scanning, quotas, takedown, optional private services.</td><td><span class="chip high">before real users</span></td></tr>
+        <tr><td>GitHub access</td><td>A long-lived personal token per user, encrypted with one master key.</td><td>A GitHub App with short-lived, per-repo tokens and an install flow. Key management with rotation (Cloud KMS).</td><td><span class="chip high">before real users</span></td></tr>
+        <tr><td>Code generation</td><td>A fixed template is cloned. The prompt is ignored. The Claude Code path is written but has never run for real.</td><td>Real generation in a sandbox with resource limits, several stacks, a feedback loop for changes, and results that match the request.</td><td><span class="chip high">core feature</span></td></tr>
+        <tr><td>Build and tests</td><td>Mocked in Actions and on the platform.</td><td>Run the project's real tests, lint and security scans. Block the deploy when they fail, and show the logs to the user.</td><td><span class="chip high">core feature</span></td></tr>
+        <tr><td>Runtime and scale</td><td>One platform instance with CPU always on. Runs and the approval wait live in memory, so a restart loses them.</td><td>A durable job queue or workflow engine, state in the database, several instances, resume after a restart.</td><td><span class="chip mid">soon after</span></td></tr>
+        <tr><td>Status accuracy</td><td>Webhook messages are not tied to a specific run. A watchdog covers lost messages.</td><td>Match every message to a run id, reconcile with the GitHub Actions API, and retry safely.</td><td><span class="chip mid">soon after</span></td></tr>
+        <tr><td>Lifecycle and cost</td><td>No delete, no rollback, no quotas. Repos, services and IAM bindings pile up.</td><td>Delete and teardown, rollback to a previous revision, per-user limits, usage and billing.</td><td><span class="chip mid">soon after</span></td></tr>
+        <tr><td>App features</td><td>One public container with no environment variables, secrets or database.</td><td>Configuration, secrets, databases, custom domains, preview environments.</td><td><span class="chip mid">soon after</span></td></tr>
+        <tr><td>Interface</td><td>API only (tested with scripts). The web UI was removed.</td><td>A dashboard with a live pipeline view, a PR review screen, logs, notifications.</td><td><span class="chip mid">soon after</span></td></tr>
+        <tr><td>Operations</td><td>Plain logs. Errors are short messages.</td><td>Structured logs and metrics, alerts, an audit trail, backups, a staging environment for the platform.</td><td><span class="chip low">later</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Suggested order of work</h3>
+  <ol class="next">
+    <li>Real sign-in and per-user checks. This closes the largest security hole and is small.</li>
+    <li>Move generated apps to their own Google project, with a role-less runtime account per app.</li>
+    <li>Replace the personal token with a GitHub App.</li>
+    <li>Run the project's real tests and builds in Actions, and surface the logs through the API.</li>
+    <li>Turn the Claude Code generation path on in a sandbox, behind the same approval gate.</li>
+    <li>Make runs durable (queue or workflow engine), then add delete, rollback, quotas and a dashboard.</li>
+  </ol>
+</section>
+
+<footer>
+  Prepared for 26 November 2026. Source: the <code>ANZ_Tranning</code> repository, the live runs of 25 November, and the design notes in <code>docs/superpowers/specs/</code>. Setup details: <code>docs/deploy-setup.md</code>.
+</footer>
+
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var pre = btn.parentElement.querySelector('pre');
+    var text = pre.innerText;
+    function done(ok) { btn.textContent = ok ? 'Copied' : 'Select and copy'; setTimeout(function () { btn.textContent = 'Copy'; }, 1800); }
+    function fallback() {
+      var r = document.createRange(); r.selectNodeContents(pre);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); done(false);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+    } else { fallback(); }
+  });
+});
+</script>
+</body>
+</html>

@@ -28,11 +28,30 @@ type WebhookStore interface {
 	UpdateProjectIf(ctx context.Context, id, fromStatus string, fields map[string]any) (bool, error)
 }
 
+// DeploySignaler tells a project's workflow about a deploy event
+// (service.TemporalRunner implements it).
+type DeploySignaler interface {
+	SignalDeploy(ctx context.Context, projectID, signal string) error
+}
+
 // WebhookHandler receives the deploy result posted by the generated repo's
 // GitHub Actions workflow.
 type WebhookHandler struct {
 	store      WebhookStore
 	rootSecret string
+	// Signaler, when set, is told about progress and results after MySQL has
+	// been written. MySQL stays the source of truth: a failed signal is logged,
+	// never returned.
+	Signaler DeploySignaler
+}
+
+func (h *WebhookHandler) signal(ctx context.Context, projectID, name string) {
+	if h.Signaler == nil {
+		return
+	}
+	if err := h.Signaler.SignalDeploy(ctx, projectID, name); err != nil {
+		log.Printf("webhook signal %s for %s: %v", name, projectID, err)
+	}
 }
 
 func NewWebhookHandler(store WebhookStore, rootSecret string) (*WebhookHandler, error) {
@@ -112,6 +131,7 @@ func (h *WebhookHandler) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if applied {
+		h.signal(r.Context(), p.ProjectID, service.SignalDeployResult)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -124,6 +144,7 @@ func (h *WebhookHandler) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		log.Printf("webhook load %s: %v", p.ProjectID, err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
 	case cur.Status == p.Status: // duplicate delivery
+		h.signal(r.Context(), p.ProjectID, service.SignalDeployResult) // harmless, and covers a lost first signal
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "duplicate": true})
 	case p.Status == model.StatusSuccess && cur.Status == model.StatusFailed && strings.HasPrefix(cur.ErrorMessage, service.WatchdogFailurePrefix):
 		// the watchdog gave up on a slow deploy that then really finished: the truth wins
@@ -138,6 +159,7 @@ func (h *WebhookHandler) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "project is not awaiting a deploy result")
 			return
 		}
+		h.signal(r.Context(), p.ProjectID, service.SignalDeployResult)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "recovered": true})
 	default:
 		writeErr(w, http.StatusConflict, "project is not awaiting a deploy result")
@@ -176,6 +198,7 @@ func (h *WebhookHandler) progress(w http.ResponseWriter, r *http.Request, p webh
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	h.signal(r.Context(), p.ProjectID, service.SignalDeployProgress)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI App Builder Demo Slides</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* 16:9 deck drawn on a fixed 1280x720 stage that is scaled to the window.
+   Green = real / done, amber = mocked / partly, red = missing. */
+:root {
+  --edge: #E3E6EC; --bg: #F7F8FA; --surface: #FFFFFF; --surface-2: #EDF0F4;
+  --fg: #141922; --muted: #566070; --line: #D5DAE3; --accent: #2A58E0;
+  --real: #0B7A55; --real-bg: #DDF3EA; --mock: #94600A; --mock-bg: #FBEBCB;
+  --high: #B42E28; --high-bg: #F9DEDB; --code-bg: #12171F; --code-fg: #E4E8EE;
+  --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --edge: #07090D; --bg: #0E1218; --surface: #161B23; --surface-2: #1E2430; --fg: #E8EBF0; --muted: #9DA7B6;
+    --line: #2C3441; --accent: #86A4FF; --real: #43D6A2; --real-bg: #12372B; --mock: #EBB85C; --mock-bg: #3A2D12;
+    --high: #FF8A81; --high-bg: #43201D; --code-bg: #0A0D12; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --edge: #07090D; --bg: #0E1218; --surface: #161B23; --surface-2: #1E2430; --fg: #E8EBF0; --muted: #9DA7B6;
+  --line: #2C3441; --accent: #86A4FF; --real: #43D6A2; --real-bg: #12372B; --mock: #EBB85C; --mock-bg: #3A2D12;
+  --high: #FF8A81; --high-bg: #43201D; --code-bg: #0A0D12; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--edge); color: var(--fg); font-family: var(--font-body); }
+
+/* ---- stage and slides ---- */
+#stage { width: 1280px; height: 720px; background: var(--bg); position: relative; overflow: hidden; counter-reset: s; transform-origin: top left; }
+.slide { width: 1280px; height: 720px; padding: 56px 84px 70px; display: flex; flex-direction: column; gap: 26px; position: relative; background: var(--bg); counter-increment: s; }
+.slide::before { content: "AI App Builder · demo · 26 Nov 2026"; position: absolute; left: 84px; bottom: 26px; font-size: 14px; color: var(--muted); }
+.slide::after { content: counter(s) " / 14"; position: absolute; right: 84px; bottom: 26px; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.deck #stage { position: absolute; }
+.deck .slide { position: absolute; inset: 0; display: none; }
+.deck .slide.active { display: flex; animation: fade 0.25s ease; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .deck .slide.active { animation: none; } }
+
+h1, h2, h3 { font-family: var(--font-display); margin: 0; line-height: 1.12; text-wrap: balance; }
+h1 { font-size: 76px; font-weight: 700; letter-spacing: -0.025em; }
+h2 { font-size: 48px; font-weight: 600; letter-spacing: -0.015em; }
+h3 { font-size: 27px; font-weight: 600; }
+p { margin: 0; }
+.lead { font-size: 27px; line-height: 1.4; color: var(--muted); max-width: 940px; }
+.eyebrow { font-size: 16px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+code { font-family: var(--font-mono); font-size: 0.86em; background: var(--surface-2); padding: 0.08em 0.36em; border-radius: 5px; }
+.grow { flex: 1; min-height: 0; }
+.center { display: flex; flex-direction: column; justify-content: center; }
+svg { display: block; width: 100%; height: auto; }
+
+/* chips and cards */
+.chip { display: inline-block; font-size: 17px; font-weight: 600; padding: 4px 14px; border-radius: 999px; background: var(--surface-2); color: var(--fg); white-space: nowrap; }
+.chip.real, .chip.done { background: var(--real-bg); color: var(--real); }
+.chip.mock, .chip.partly { background: var(--mock-bg); color: var(--mock); }
+.chip.missing { background: var(--high-bg); color: var(--high); }
+.cards { display: grid; gap: 22px; }
+.cols2 { grid-template-columns: 1fr 1fr; }
+.cols3 { grid-template-columns: 1fr 1fr 1fr; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 26px 28px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.card p, .card li { font-size: 22px; line-height: 1.42; }
+.card ul { margin: 0; padding-left: 24px; display: flex; flex-direction: column; gap: 8px; }
+.card.real { border-color: var(--real); }
+.card.mock { border-color: var(--mock); }
+.big-n { font-family: var(--font-display); font-size: 54px; font-weight: 700; color: var(--accent); line-height: 1; }
+.arrowbig { align-self: center; font-size: 44px; color: var(--muted); }
+.row { display: flex; gap: 18px; align-items: stretch; }
+.row > .card { flex: 1; }
+
+/* status pipeline */
+.pipe { display: flex; flex-wrap: wrap; gap: 12px 10px; align-items: center; }
+.pipe .s { font-family: var(--font-mono); font-size: 21px; background: var(--surface); border: 1.5px solid var(--line); border-radius: 8px; padding: 8px 14px; }
+.pipe .s.gate { border-color: var(--mock); color: var(--mock); }
+.pipe .s.end { border-color: var(--real); color: var(--real); }
+.pipe .a { color: var(--muted); font-size: 24px; }
+
+/* code */
+pre { margin: 0; background: var(--code-bg); color: var(--code-fg); border-radius: 10px; padding: 18px 22px; font-family: var(--font-mono); font-size: 19px; line-height: 1.5; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 21px; }
+th { text-align: left; font-size: 15px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 10px 16px; border-bottom: 2px solid var(--line); }
+td { padding: 14px 16px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.35; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+
+.agenda { display: flex; gap: 22px; margin-top: 14px; }
+.agenda div { flex: 1; border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; font-size: 20px; color: var(--muted); line-height: 1.35; }
+.agenda b { display: block; font-family: var(--font-display); font-size: 23px; color: var(--fg); font-weight: 600; }
+
+/* orchestrator stages */
+.stages { display: flex; gap: 8px; align-items: stretch; }
+.stages .ar { align-self: center; color: var(--muted); font-size: 22px; }
+.st { flex: 1; min-width: 0; background: var(--surface); border: 1.5px solid var(--line); border-radius: 10px; padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.st b { font-family: var(--font-mono); font-size: 18px; font-weight: 600; }
+.st span { font-size: 16px; line-height: 1.35; color: var(--muted); }
+.st.gate { border-color: var(--mock); } .st.gate b { color: var(--mock); }
+.st.end { border-color: var(--real); } .st.end b { color: var(--real); }
+.st.api { border-style: dashed; }
+table.dense { font-size: 18px; } table.dense td { padding: 10px 14px; } table.dense th { padding: 8px 14px; }
+table.dense td:first-child { white-space: normal; width: 25%; }
+.mini li { font-size: 19px !important; line-height: 1.38 !important; }
+.tag { display: inline-block; font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 1px 8px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
+.tag.high { background: var(--high-bg); color: var(--high); } .tag.med { background: var(--mock-bg); color: var(--mock); }
+
+/* diagrams */
+.node rect { fill: var(--surface); stroke: var(--line); stroke-width: 2; }
+.node.done rect { stroke: var(--real); fill: var(--real-bg); }
+.node.partly rect { stroke: var(--mock); fill: var(--mock-bg); }
+.node.missing rect { stroke: var(--high); fill: var(--high-bg); stroke-dasharray: 7 5; }
+.nt { fill: var(--fg); font: 600 20px var(--font-body); text-anchor: middle; }
+.ns { fill: var(--muted); font: 500 15px var(--font-body); text-anchor: middle; }
+.nt.big { font-size: 24px; } .ns.big { font-size: 17px; }
+.edge { stroke: var(--fg); stroke-width: 2; fill: none; }
+.edge.dash { stroke-dasharray: 6 5; }
+.ahead { fill: var(--fg); } .ahead-mock { fill: var(--mock); } .ahead-miss { fill: var(--high); }
+.edge.partlyE { stroke: var(--mock); stroke-width: 2.5; } .edge.missE { stroke: var(--high); stroke-width: 2.5; }
+.elabel { fill: var(--muted); font: 500 15px var(--font-body); }
+.elabel.big { font-size: 19px; text-anchor: middle; fill: var(--fg); font-weight: 600; }
+.stat { font: 700 15px var(--font-body); text-anchor: middle; letter-spacing: 0.04em; text-transform: uppercase; }
+.stat.done { fill: var(--real); } .stat.partly { fill: var(--mock); } .stat.missing { fill: var(--high); }
+.tagm { fill: var(--mock-bg); } .tagr { fill: var(--real-bg); }
+.tagt { font: 600 15px var(--font-body); text-anchor: middle; }
+.tagmt { fill: var(--mock); } .tagrt { fill: var(--real); }
+.gate { fill: var(--mock-bg); stroke: var(--mock); stroke-width: 2; stroke-dasharray: 5 4; }
+.gatet { fill: var(--mock); font: 700 18px var(--font-body); text-anchor: middle; }
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 19px; color: var(--muted); }
+.count { display: flex; gap: 14px; align-items: baseline; }
+.count b { font-family: var(--font-display); font-size: 40px; }
+.statement { font-family: var(--font-display); font-size: 36px; line-height: 1.25; font-weight: 600; max-width: 900px; text-wrap: balance; }
+.next { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 9px; counter-reset: n; }
+.next li { counter-increment: n; display: grid; grid-template-columns: 52px 1fr; gap: 16px; align-items: baseline; font-size: 23px; }
+.next li::before { content: counter(n); font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 30px; }
+.next li small { display: block; font-size: 17px; color: var(--muted); margin-top: 2px; }
+.err { font-family: var(--font-mono); font-size: 19px; color: var(--high); }
+
+/* controls */
+.controls { position: fixed; right: 14px; bottom: 12px; display: flex; gap: 8px; align-items: center; font: 500 13px var(--font-body); color: var(--muted); z-index: 5; }
+.controls button { font: 600 14px var(--font-body); background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 13px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+.controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { opacity: 0.8; }
+
+/* without JS (or when printing): all slides stacked */
+html:not(.deck) body { background: var(--edge); }
+html:not(.deck) #stage { height: auto; overflow: visible; display: flex; flex-direction: column; gap: 24px; background: none; width: 1280px; margin: 0 auto; }
+html:not(.deck) .controls { display: none; }
+@media print {
+  @page { size: 1280px 720px; margin: 0; }
+  html, body { background: none; }
+  .deck #stage, #stage { position: static !important; transform: none !important; width: 1280px !important; height: auto !important; display: block !important; }
+  .deck .slide, .slide { display: flex !important; position: relative !important; break-after: page; animation: none !important; }
+  .controls { display: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div id="stage">
+
+<!-- 1 -->
+<section class="slide center" style="gap:30px">
+  <span class="eyebrow">Demo report · 26 November 2026</span>
+  <h1>AI App Builder</h1>
+  <p class="lead" style="font-size:32px;max-width:900px">Describe an app. Review one pull request. Get a live link on Google Cloud.</p>
+  <div class="agenda">
+    <div><b>1 · What it does</b>The flow, step by step</div>
+    <div><b>2 · How it is built</b>Security, orchestrator, Temporal</div>
+    <div><b>3 · Where it goes next</b>The plan and the gap</div>
+  </div>
+  <div style="display:flex;gap:12px;margin-top:6px">
+    <span class="chip real">Works end to end</span>
+    <span class="chip mock">Code and tests are mocked</span>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>From a request to a live link, in three steps</h2>
+  <div class="row grow" style="align-items:center">
+    <div class="card" style="min-height:300px;justify-content:center"><span class="big-n">1</span><h3>Describe</h3><p>A user sends a request: a name and a prompt.</p></div>
+    <span class="arrowbig">→</span>
+    <div class="card" style="min-height:300px;justify-content:center"><span class="big-n">2</span><h3>Review</h3><p>A pull request is opened. A human reads it and approves.</p></div>
+    <span class="arrowbig">→</span>
+    <div class="card real" style="min-height:300px;justify-content:center"><span class="big-n">3</span><h3>Get a live app</h3><p>GitHub Actions builds it and deploys it. The user gets a public URL.</p></div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>Today: a request becomes a live app</h2>
+  <p class="lead">One script, one approval step, then nobody touches anything. The platform runs on Google Cloud; you use it like a customer would.</p>
+  <div class="grow center"><svg viewBox="0 0 1160 330" role="img" aria-label="Today's flow: a script sends a request to the platform on Cloud Run, which creates a GitHub repo and pull request. After approval it is merged, GitHub Actions builds, tests and deploys, and the app is live on Cloud Run.">
+<defs><marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead"/></marker></defs>
+<g class="node"><rect x="0" y="104" width="190" height="76" rx="8"/><text class="nt big" x="95" y="138">You</text><text class="ns big" x="95" y="163">run one script</text></g>
+<g class="node"><rect x="242" y="104" width="190" height="76" rx="8"/><text class="nt big" x="337" y="138">The platform</text><text class="ns big" x="337" y="163">runs on Cloud Run</text></g>
+<g class="node"><rect x="484" y="104" width="190" height="76" rx="8"/><text class="nt big" x="579" y="138">GitHub</text><text class="ns big" x="579" y="163">repo + pull request</text></g>
+<g class="node"><rect x="726" y="104" width="190" height="76" rx="8"/><text class="nt big" x="821" y="138">GitHub Actions</text><text class="ns big" x="821" y="163">build · test · deploy</text></g>
+<g class="node"><rect x="968" y="104" width="190" height="76" rx="8"/><text class="nt big" x="1063" y="138">Cloud Run</text><text class="ns big" x="1063" y="163">live app</text></g>
+<line class="edge" x1="192" y1="142" x2="240" y2="142" marker-end="url(#fa)"/>
+<text class="elabel big" x="216" y="92">1  start</text>
+<line class="edge" x1="434" y1="142" x2="482" y2="142" marker-end="url(#fa)"/>
+<text class="elabel big" x="458" y="92">2  repo + PR</text>
+<line class="edge" x1="676" y1="142" x2="724" y2="142" marker-end="url(#fa)"/>
+<text class="elabel big" x="700" y="92">3  merge</text>
+<line class="edge" x1="918" y1="142" x2="966" y2="142" marker-end="url(#fa)"/>
+<text class="elabel big" x="942" y="92">4  deploy</text>
+<rect class="gate" x="550" y="4" width="300" height="40" rx="20"/><text class="gatet" x="700" y="30">approval (the script approves)</text>
+<line class="edge dash" x1="700" y1="44" x2="700" y2="70"/>
+<rect class="tagm" x="242" y="204" width="190" height="32" rx="6"/><text class="tagt tagmt" x="337" y="225">code = clone of a template</text>
+<rect class="tagr" x="484" y="204" width="190" height="32" rx="6"/><text class="tagt tagrt" x="579" y="225">private repo, PR, merge</text>
+<rect class="tagm" x="726" y="204" width="190" height="32" rx="6"/><text class="tagt tagmt" x="821" y="225">mock build and tests</text>
+<rect class="tagr" x="726" y="244" width="190" height="32" rx="6"/><text class="tagt tagrt" x="821" y="265">real docker build + push</text>
+<rect class="tagr" x="968" y="204" width="190" height="32" rx="6"/><text class="tagt tagrt" x="1063" y="225">real deploy, public URL</text>
+<text class="elabel" x="0" y="300" text-anchor="start" style="fill:var(--muted)">Green: real.  Amber: mocked for the demo.</text>
+</svg></div>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>One request, step by step</h2>
+  <p class="lead">The script prints the project state as it moves. You do not have to do anything.</p>
+  <div class="grow center" style="gap:34px">
+    <div class="pipe">
+      <span class="s">pending</span><span class="a">→</span>
+      <span class="s">repo_created</span><span class="a">→</span>
+      <span class="s">tests_passed</span><span class="a">→</span>
+      <span class="s gate">waiting_for_approval</span>
+    </div>
+    <div class="pipe">
+      <span class="a">→</span>
+      <span class="s">merged</span><span class="a">→</span>
+      <span class="s">building</span><span class="a">→</span>
+      <span class="s">testing</span><span class="a">→</span>
+      <span class="s">deploying</span><span class="a">→</span>
+      <span class="s end">success + live_url</span>
+    </div>
+    <p class="lead" style="font-size:23px">Amber is the approval gate. Any error ends in <code>failed</code> with a message.</p>
+  </div>
+</section>
+
+<!-- 5 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>Then GitHub Actions builds and deploys</h2>
+  <p class="lead">Starts when the pull request is merged. The platform follows the run on GitHub and reports each step.</p>
+  <div class="row grow" style="align-items:center">
+    <div class="card" style="min-height:290px"><h3>Build</h3><p><span class="chip mock">mock</span> compile</p><p><span class="chip real">real</span> docker build and push</p></div>
+    <span class="arrowbig">→</span>
+    <div class="card" style="min-height:290px"><h3>Test</h3><p><span class="chip mock">mock</span> prints "12 passed"</p></div>
+    <span class="arrowbig">→</span>
+    <div class="card real" style="min-height:290px"><h3>Deploy</h3><p><span class="chip real">real</span> <code>gcloud run services replace</code></p><p style="color:var(--muted);font-size:19px;margin-top:auto">ends with the public URL</p></div>
+  </div>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>What is real and what is mocked</h2>
+  <div class="cards cols2 grow">
+    <div class="card real">
+      <h3>Real</h3>
+      <ul>
+        <li>The request, saved as a project</li>
+        <li>GitHub repo, pull request and merge</li>
+        <li>Docker image build and push</li>
+        <li>Keyless login to Google Cloud</li>
+        <li>Deploy to Cloud Run, public URL</li>
+        <li>Runs on Cloud Run, with encrypted GitHub tokens</li>
+        <li>Live progress of the Actions run, read from GitHub</li>
+      </ul>
+    </div>
+    <div class="card mock">
+      <h3>Mocked</h3>
+      <ul>
+        <li>Code generation: the demo clones a template repo</li>
+        <li>Tests before the PR: a 3 second pause</li>
+        <li>"Compile" and "tests" in GitHub Actions: they print a message</li>
+        <li>The prompt is saved but not used</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 7 -->
+<section class="slide">
+  <span class="eyebrow">1 · What it does</span>
+  <h2>How to run it</h2>
+  <div class="cards cols2">
+    <div class="card"><h3>GitHub</h3>
+      <ul><li>A token with the <code>repo</code> and <code>workflow</code> scopes</li><li>Push to <code>main</code>: the platform deploys itself</li></ul>
+      <pre style="font-size:17px;padding:12px 16px">GITHUB_TOKEN=ghp_...</pre></div>
+    <div class="card"><h3>Google Cloud</h3>
+      <ul><li>Trust the GitHub account's repos (one time)</li><li>Secrets in Secret Manager</li></ul>
+      <pre style="font-size:17px;padding:12px 16px">DB_USER  DB_PASSWORD  DB_NAME
+API_KEY  ENCRYPTION_MASTER_KEY</pre></div>
+  </div>
+  <p class="lead" style="font-size:23px">Then run the whole flow with one script. It prints every step.</p>
+  <pre>./scripts/test-server.sh</pre>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <span class="eyebrow">2 · How it is built</span>
+  <h2>Security: protected, and accepted for now</h2>
+  <p class="lead" style="font-size:22px;margin-top:-10px">What keeps it safe today, and what we knowingly left open.</p>
+  <div class="cards cols2 grow" style="align-content:start">
+    <div class="card real"><h3>Protected</h3>
+      <ul class="mini">
+        <li>No stored Google keys. GitHub signs in with short-lived tokens, only for the owner's repos.</li>
+        <li>GitHub tokens are encrypted (AES-256-GCM). The key is in Secret Manager. Tokens never reach logs or replies.</li>
+        <li>Per-app webhook secrets are Actions secrets, never committed.</li>
+        <li>Values written into generated files are checked. Live links must be https.</li>
+        <li>A person approves the pull request before anything is merged.</li>
+      </ul></div>
+    <div class="card mock"><h3>Accepted for now</h3>
+      <ul class="mini">
+        <li><span class="tag high">high</span>One shared API key and a user header, not real sign-in</li>
+        <li><span class="tag high">high</span>One deploy account for every app, set up by hand. A trusted repo could replace any service, even the platform.</li>
+        <li><span class="tag med">medium</span>Every app is public: no abuse checks or quotas</li>
+        <li><span class="tag med">medium</span>A personal token per user is long-lived. A GitHub App gives short, per-repo tokens.</li>
+      </ul></div>
+  </div>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <span class="eyebrow">2 · How it is built</span>
+  <h2>The orchestrator today</h2>
+  <p class="lead" style="font-size:22px;margin-top:-10px">The part that drives every project: one goroutine per project.</p>
+  <div class="stages">
+    <div class="st api"><b>API call</b><span>Saves the project, starts a goroutine, answers right away</span></div>
+    <span class="ar">→</span>
+    <div class="st"><b>pending</b><span>Compare-and-set to <code>generating</code>. A second run does nothing.</span></div>
+    <span class="ar">→</span>
+    <div class="st"><b>generating</b><span>Create repo, generate code, open the PR. 5 min limit per step.</span></div>
+    <span class="ar">→</span>
+    <div class="st gate"><b>waiting</b><span>An in-memory channel. Times out after 24 h.</span></div>
+    <span class="ar">→</span>
+    <div class="st"><b>deploying</b><span>Merge, then poll GitHub every 5 s. 15 min limit.</span></div>
+    <span class="ar">→</span>
+    <div class="st end"><b>success / failed</b><span>Status and live link saved in MySQL</span></div>
+  </div>
+  <div class="cards cols2 grow" style="align-content:start">
+    <div class="card real"><h3>Durable: MySQL</h3><ul class="mini"><li>Status, step, repo, PR and live link</li><li>Moved forward only, with compare-and-set</li><li>What the API and the script read</li></ul></div>
+    <div class="card mock"><h3>Only in memory</h3><ul class="mini"><li>The goroutine that runs each project</li><li>The approval channel</li><li>The polling loop. A restart loses all three. A watchdog marks stale deploys failed.</li></ul></div>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="slide">
+  <span class="eyebrow">2 · How it is built</span>
+  <h2>Ready for Temporal</h2>
+  <p class="lead" style="font-size:22px;margin-top:-10px">How much of it can move to Temporal as it is.</p>
+  <div class="grow center">
+    <table class="dense">
+      <thead><tr><th style="width:36%">Today</th><th>With Temporal</th><th style="width:110px">Ready?</th></tr></thead>
+      <tbody>
+        <tr><td><code>run()</code>: one function, step after step</td><td>The workflow</td><td><span class="chip real">yes</span></td></tr>
+        <tr><td>Create repo, generate, open PR, merge, each with a timeout</td><td>Activities with retries. Create repo and merge must first be safe to repeat.</td><td><span class="chip partly">partly</span></td></tr>
+        <tr><td>Approve sends on an in-memory channel</td><td>A signal, plus a 24 h timer</td><td><span class="chip real">yes</span></td></tr>
+        <tr><td>Polling loop and watchdog</td><td>A polling activity and a workflow timer</td><td><span class="chip real">yes</span></td></tr>
+        <tr><td>Status in MySQL, 2 code runs at once</td><td>MySQL stays the read model. Worker concurrency sets the limit.</td><td><span class="chip real">yes</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="lead" style="font-size:21px">Already in place: an interface at every outside call, and forward-only state. Also to do: read the clock inside an activity, not in the flow.</p>
+</section>
+
+<!-- 11 -->
+<section class="slide">
+  <span class="eyebrow">3 · Where it goes next</span>
+  <h2>The target architecture</h2>
+  <div class="grow center"><svg viewBox="0 0 1060 440" role="img" aria-label="Target architecture: the user calls a Go API backed by MySQL. The API starts a Temporal workflow, which asks a Claude Code agent for code, then uses GitHub to create the repo and open and merge the pull request. GitHub Actions deploys to Cloud Run and reports success or failure to the Temporal webhook listener. A failed deploy is sent back to Claude to fix and patch the pull request.">
+<defs><marker id="p1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead"/></marker><marker id="p1am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead-mock"/></marker><marker id="p1ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead-miss"/></marker></defs>
+<g class="node"><rect x="0" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="90" y="55">User</text>
+</g>
+<g class="node"><rect x="300" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="390" y="43">API Gateway</text><text class="ns" x="390" y="65">Go</text>
+</g>
+<g class="node"><rect x="600" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="690" y="43">MySQL</text><text class="ns" x="690" y="65">projects table</text>
+</g>
+<g class="node"><rect x="0" y="170" width="180" height="64" rx="8"/>
+<text class="nt" x="90" y="197">Claude Code</text><text class="ns" x="90" y="219">agent + test loop</text>
+</g>
+<g class="node"><rect x="270" y="170" width="240" height="64" rx="8"/>
+<text class="nt" x="390" y="197">Temporal</text><text class="ns" x="390" y="219">workflow + webhook listener</text>
+</g>
+<g class="node"><rect x="300" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="390" y="357">GitHub</text><text class="ns" x="390" y="379">repo · PR · merge</text>
+</g>
+<g class="node"><rect x="580" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="670" y="357">GitHub Actions</text><text class="ns" x="670" y="379">build · deploy</text>
+</g>
+<g class="node"><rect x="860" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="950" y="357">Cloud Run</text><text class="ns" x="950" y="379">live app</text>
+</g>
+<line class="edge" x1="180" y1="48" x2="298" y2="48" marker-end="url(#p1a)"/>
+<text class="elabel" x="239" y="40" text-anchor="middle">prompt</text>
+<line class="edge" x1="480" y1="48" x2="598" y2="48" marker-end="url(#p1a)"/>
+<text class="elabel" x="539" y="40" text-anchor="middle">state</text>
+<line class="edge" x1="390" y1="82" x2="390" y2="168" marker-start="url(#p1a)" marker-end="url(#p1a)"/>
+<text class="elabel" x="404" y="128" text-anchor="start">start · signals</text>
+<line class="edge" x1="268" y1="192" x2="182" y2="192" marker-end="url(#p1a)"/>
+<text class="elabel" x="225" y="184" text-anchor="middle">ask</text>
+<line class="edge" x1="182" y1="214" x2="268" y2="214" stroke-dasharray="5 4" marker-end="url(#p1a)"/>
+<text class="elabel" x="225" y="236" text-anchor="middle">code</text>
+<line class="edge" x1="390" y1="236" x2="390" y2="328" marker-end="url(#p1a)"/>
+<text class="elabel" x="404" y="290" text-anchor="start">repo · PR · merge</text>
+<line class="edge" x1="480" y1="362" x2="578" y2="362" marker-end="url(#p1a)"/>
+<text class="elabel" x="529" y="354" text-anchor="middle">push</text>
+<line class="edge" x1="760" y1="362" x2="858" y2="362" marker-end="url(#p1a)"/>
+<text class="elabel" x="809" y="354" text-anchor="middle">deploy</text>
+<polyline class="edge dash" points="670,328 670,206 512,206" marker-end="url(#p1a)"/>
+<text class="elabel" x="684" y="270" text-anchor="start">result: success / failed</text>
+<polyline class="edge dash" points="300,236 300,296 90,296 90,236" marker-end="url(#p1a)"/>
+<text class="elabel" x="195" y="316" text-anchor="middle">failed deploy → fix, patch PR</text>
+</svg></div>
+  <p class="lead" style="font-size:22px">Temporal runs each project and listens for the GitHub Actions result. If the deploy fails, the logs go back to Claude, which patches the PR and tries again.</p>
+</section>
+
+<!-- 12 -->
+<section class="slide">
+  <span class="eyebrow">3 · Where it goes next</span>
+  <h2>The pipeline exists. The product around it does not.</h2>
+  <div class="grow center"><svg viewBox="0 0 1060 440" role="img" aria-label="Target architecture: the user calls a Go API backed by MySQL. The API starts a Temporal workflow, which asks a Claude Code agent for code, then uses GitHub to create the repo and open and merge the pull request. GitHub Actions deploys to Cloud Run and reports success or failure to the Temporal webhook listener. A failed deploy is sent back to Claude to fix and patch the pull request.">
+<defs><marker id="p2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead"/></marker><marker id="p2am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead-mock"/></marker><marker id="p2ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L10 5 L0 9 z" class="ahead-miss"/></marker></defs>
+<g class="node"><rect x="0" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="90" y="55">User</text>
+</g>
+<g class="node partly"><rect x="300" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="390" y="43">API Gateway</text><text class="ns" x="390" y="65">Go</text>
+</g>
+<text class="stat partly" x="430" y="102">partly</text>
+<g class="node done"><rect x="600" y="16" width="180" height="64" rx="8"/>
+<text class="nt" x="690" y="43">MySQL</text><text class="ns" x="690" y="65">projects table</text>
+</g>
+<text class="stat done" x="690" y="102">done</text>
+<g class="node partly"><rect x="0" y="170" width="180" height="64" rx="8"/>
+<text class="nt" x="90" y="197">Claude Code</text><text class="ns" x="90" y="219">agent + test loop</text>
+</g>
+<text class="stat partly" x="130" y="256">partly</text>
+<g class="node partly"><rect x="270" y="170" width="240" height="64" rx="8"/>
+<text class="nt" x="390" y="197">Temporal</text><text class="ns" x="390" y="219">workflow + webhook listener</text>
+</g>
+<text class="stat partly" x="460" y="256">partly</text>
+<g class="node done"><rect x="300" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="390" y="357">GitHub</text><text class="ns" x="390" y="379">repo · PR · merge</text>
+</g>
+<text class="stat done" x="390" y="416">done</text>
+<g class="node done"><rect x="580" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="670" y="357">GitHub Actions</text><text class="ns" x="670" y="379">build · deploy</text>
+</g>
+<text class="stat done" x="670" y="416">done</text>
+<g class="node done"><rect x="860" y="330" width="180" height="64" rx="8"/>
+<text class="nt" x="950" y="357">Cloud Run</text><text class="ns" x="950" y="379">live app</text>
+</g>
+<text class="stat done" x="950" y="416">done</text>
+<line class="edge" x1="180" y1="48" x2="298" y2="48" marker-end="url(#p2a)"/>
+<text class="elabel" x="239" y="40" text-anchor="middle">prompt</text>
+<line class="edge" x1="480" y1="48" x2="598" y2="48" marker-end="url(#p2a)"/>
+<text class="elabel" x="539" y="40" text-anchor="middle">state</text>
+<line class="edge" x1="390" y1="82" x2="390" y2="168" marker-start="url(#p2a)" marker-end="url(#p2a)"/>
+<text class="elabel" x="404" y="128" text-anchor="start">start · signals</text>
+<line class="edge" x1="268" y1="192" x2="182" y2="192" marker-end="url(#p2a)"/>
+<text class="elabel" x="225" y="184" text-anchor="middle">ask</text>
+<line class="edge" x1="182" y1="214" x2="268" y2="214" stroke-dasharray="5 4" marker-end="url(#p2a)"/>
+<text class="elabel" x="225" y="236" text-anchor="middle">code</text>
+<line class="edge" x1="390" y1="236" x2="390" y2="328" marker-end="url(#p2a)"/>
+<text class="elabel" x="404" y="290" text-anchor="start">repo · PR · merge</text>
+<line class="edge" x1="480" y1="362" x2="578" y2="362" marker-end="url(#p2a)"/>
+<text class="elabel" x="529" y="354" text-anchor="middle">push</text>
+<line class="edge" x1="760" y1="362" x2="858" y2="362" marker-end="url(#p2a)"/>
+<text class="elabel" x="809" y="354" text-anchor="middle">deploy</text>
+<polyline class="edge dash partlyE" points="670,328 670,206 512,206" marker-end="url(#p2am)"/>
+<text class="elabel" x="684" y="270" text-anchor="start">result: success / failed</text>
+<polyline class="edge dash missE" points="300,236 300,296 90,296 90,236" marker-end="url(#p2ar)"/>
+<text class="elabel" x="195" y="316" text-anchor="middle">failed deploy → fix, patch PR</text>
+</svg></div>
+  <div class="legend">
+    <span class="count"><b style="color:var(--real)">4</b> done</span>
+    <span class="count"><b style="color:var(--mock)">3</b> partly</span>
+    <span>of the 7 components</span>
+    <span style="color:var(--high);font-weight:600">· 1 missing link: failed deploy → Claude fix</span>
+  </div>
+</section>
+
+<!-- 13 -->
+<section class="slide">
+  <span class="eyebrow">3 · Where it goes next</span>
+  <h2>What is missing</h2>
+  <div class="grow center">
+    <table class="dense">
+      <thead><tr><th>Part</th><th>Today</th><th>Plan</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Isolated deployments</td><td>One shared deploy account, set up by hand. Any trusted repo can replace any service.</td><td>A deploy account and trust per app, in a separate project</td><td><span class="chip missing">missing</span></td></tr>
+        <tr><td>Google Cloud setup</td><td>By hand in the console. The automatic setup is written but unused.</td><td>Created by code, repeatable</td><td><span class="chip missing">missing</span></td></tr>
+        <tr><td>Auto-fix</td><td>A failed deploy is only marked failed.</td><td>The failed job goes to Claude, which patches the PR</td><td><span class="chip missing">missing</span></td></tr>
+        <tr><td>Claude agent</td><td>Mocked: a template is cloned.</td><td>Claude writes code, a sandbox tests it</td><td><span class="chip partly">partly</span></td></tr>
+        <tr><td>Temporal</td><td>A goroutine per project. Approval and polling in memory.</td><td>Durable workflows, approval as a signal</td><td><span class="chip partly">partly</span></td></tr>
+        <tr><td>API and users</td><td>One shared key and a user header.</td><td>Real sign-in, per-user checks</td><td><span class="chip partly">partly</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 14 -->
+<section class="slide">
+  <span class="eyebrow">3 · Where it goes next</span>
+  <h2>Next steps</h2>
+  <ol class="next grow center" style="justify-content:center">
+    <li><span>Real sign-in<small>Closes the biggest security hole.</small></span></li>
+    <li><span>Move the orchestrator to Temporal<small>First make repo creation and merge safe to repeat. Approval becomes a signal.</small></span></li>
+    <li><span>Turn the Claude loop on<small>Real code, sandbox tests and lint, errors fed back.</small></span></li>
+    <li><span>Auto-fix a failed deploy<small>Temporal re-routes the failed job to Claude, which patches the PR.</small></span></li>
+    <li><span>Isolate deployments, automate the Google Cloud setup<small>Separate project, a deploy account per app, all created by code instead of by hand.</small></span></li>
+    <li><span>Harden<small>GitHub App, quotas, abuse checks, cost limits, logs.</small></span></li>
+  </ol>
+  <p class="statement" style="font-size:30px;color:var(--accent)">The pipeline works. Next is the product around it.</p>
+</section>
+
+</div>
+
+<div class="controls" aria-label="Slide controls">
+  <span class="hint">← → to move · F fullscreen · Ctrl+P prints one slide per page</span>
+  <button type="button" id="prev" aria-label="Previous slide">Prev</button>
+  <button type="button" id="next" aria-label="Next slide">Next</button>
+</div>
+
+<script>
+(function () {
+  var stage = document.getElementById('stage');
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var i = 0;
+  document.documentElement.classList.add('deck');
+
+  function fit() {
+    var s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    stage.style.transform = 'scale(' + s + ')';
+    stage.style.left = Math.max(0, (window.innerWidth - 1280 * s) / 2) + 'px';
+    stage.style.top = Math.max(0, (window.innerHeight - 720 * s) / 2) + 'px';
+  }
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (el, k) { el.classList.toggle('active', k === i); });
+    try { history.replaceState(null, '', '#' + (i + 1)); } catch (e) { /* file:// in some browsers */ }
+  }
+  function fromHash() {
+    var n = parseInt(String(location.hash).replace('#', ''), 10);
+    return isNaN(n) ? 0 : n - 1;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) { return; }
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'PageDown' || k === ' ' || k === 'Enter') { e.preventDefault(); show(i + 1); }
+    else if (k === 'ArrowLeft' || k === 'PageUp' || k === 'Backspace') { e.preventDefault(); show(i - 1); }
+    else if (k === 'Home') { show(0); }
+    else if (k === 'End') { show(slides.length - 1); }
+    else if (k === 'f' || k === 'F') {
+      if (document.fullscreenElement) { document.exitFullscreen(); }
+      else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen().catch(function () {}); }
+    }
+  });
+  document.getElementById('next').addEventListener('click', function () { show(i + 1); });
+  document.getElementById('prev').addEventListener('click', function () { show(i - 1); });
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (x0 === null) { return; }
+    var dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) > 50) { show(i + (dx < 0 ? 1 : -1)); }
+  }, { passive: true });
+  window.addEventListener('hashchange', function () { show(fromHash()); });
+  window.addEventListener('resize', fit);
+  window.addEventListener('beforeprint', function () { stage.style.transform = 'none'; });
+  window.addEventListener('afterprint', fit);
+  fit();
+  show(fromHash());
+})();
+</script>
+</body>
+</html>

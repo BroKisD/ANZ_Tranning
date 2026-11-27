@@ -16,6 +16,23 @@ services:
       timeout: 5s
       retries: 10
 
+  temporal:
+    image: temporalio/temporal:1.10.1
+    # the image runs as a non-root user and a fresh named volume is root-owned,
+    # so the dev server could not create /data/temporal.db; training setup only
+    user: "0:0"
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    volumes:
+      - temporal_data:/data
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   app:
     build: .
     command: ["serve"]
@@ -41,9 +58,13 @@ services:
       GCP_SERVICE_ACCOUNT: ${GCP_SERVICE_ACCOUNT:-}
       GCP_ALLOWED_GITHUB_OWNERS: ${GCP_ALLOWED_GITHUB_OWNERS:-}
       DEPLOY_TIMEOUT: ${DEPLOY_TIMEOUT:-}
+      TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       db:
-        condition: service_healthy 
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
 
 volumes:
   mysql_data:
+  temporal_data:
