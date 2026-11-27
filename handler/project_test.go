@@ -20,7 +20,7 @@ import (
 var (
 	_ handler.ProjectStore  = (*repository.Store)(nil)
 	_ handler.WebhookStore  = (*repository.Store)(nil)
-	_ handler.ProjectRunner = (*service.Orchestrator)(nil)
+	_ handler.ProjectRunner = (*service.TemporalRunner)(nil)
 )
 
 const rootSecret = "root-webhook-secret"

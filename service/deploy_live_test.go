@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/client"
+
 	"anz-training/model"
 	"anz-training/service"
 )
@@ -159,17 +161,29 @@ func TestLive_Deploy(t *testing.T) {
 	store := testutil.NewMemStore()
 	ints := testutil.NewMemIntegrations()
 	ints.Put(t, key, "u1", model.ProviderGitHub, model.GitHubCreds{Owner: owner, Token: token})
-	orch := service.NewOrchestrator(store, ints, gh, gen, nil, service.OrchestratorConfig{
-		MasterKey: key, Deployer: deployer, StageTimeout: 5 * time.Minute, ApprovalTimeout: 10 * time.Minute,
-	})
-	defer func() {
-		c, done := context.WithTimeout(context.Background(), 5*time.Second)
-		defer done()
-		_ = orch.Shutdown(c)
-	}()
+	// the run is a Temporal workflow: needs a dev server (docker compose up -d temporal)
+	addr := os.Getenv("TEMPORAL_ADDRESS")
+	if addr == "" {
+		addr = "localhost:7233"
+	}
+	tc, err := client.Dial(client.Options{HostPort: addr})
+	if err != nil {
+		t.Fatalf("temporal at %s: %v", addr, err)
+	}
+	defer tc.Close()
+	stopWorkers, err := service.StartWorkers(tc, &service.Activities{
+		Store: store, Integrations: ints, GitHub: gh, Gen: gen, Deployer: deployer, MasterKey: key,
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopWorkers()
+	orch := service.NewTemporalRunner(tc, store, service.WorkflowConfig{
+		Deploy: true, StageTimeout: 5 * time.Minute, ApprovalTimeout: 10 * time.Minute, DeployTimeout: 15 * time.Minute,
+	}, deployer)
 
 	// ---- the user's request ----
-	const id = "deploy-live-1"
+	id := "deploy-live-" + time.Now().Format("150405")
 	name := "Live Demo " + time.Now().Format("150405")
 	store.Add(model.Project{ID: id, OwnerID: "u1", Name: name, Prompt: "deploy a copy of this app", Status: model.StatusPending, CurrentStep: model.StepInitializing, BranchName: "main"})
 	t.Logf("STEP 1  request saved: project %q (status=pending)", name)
