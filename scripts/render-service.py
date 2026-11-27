@@ -5,11 +5,13 @@ The values come from GitHub Actions secrets (passed in as environment variables)
 nothing is committed and nothing has to be set by hand on the Cloud Run service:
 
   required: GCP_PROJECT_ID GCP_REGION GCP_ARTIFACT_REPO GCP_WIF_PROVIDER GCP_SERVICE_ACCOUNT DEMO_TEMPLATE_REPO
+            TEMPORAL_ADDRESS TEMPORAL_NAMESPACE   (Temporal Cloud endpoint and namespace)
 
-ENCRYPTION_MASTER_KEY is read from the Secret Manager secret of the same name (like the other secrets
-in service.yml); it is referenced, never copied.
+ENCRYPTION_MASTER_KEY and TEMPORAL_API_KEY are read from the Secret Manager secrets of the same name
+(like the other secrets in service.yml); they are referenced, never copied.
 
-It also pins one always-on instance, because runs and approvals live in memory.
+It also pins one always-on instance with CPU always allocated: the Temporal worker runs in this
+process and must keep polling for work between requests.
 Usage: render-service.py service.yml   (edits the file in place)
 """
 import os
@@ -17,8 +19,9 @@ import sys
 
 import yaml
 
-REQUIRED = ["GCP_PROJECT_ID", "GCP_REGION", "GCP_ARTIFACT_REPO", "GCP_WIF_PROVIDER", "GCP_SERVICE_ACCOUNT", "DEMO_TEMPLATE_REPO"]
-SECRET_REFS = ["ENCRYPTION_MASTER_KEY"]  # Secret Manager secrets, latest version
+REQUIRED = ["GCP_PROJECT_ID", "GCP_REGION", "GCP_ARTIFACT_REPO", "GCP_WIF_PROVIDER", "GCP_SERVICE_ACCOUNT", "DEMO_TEMPLATE_REPO",
+            "TEMPORAL_ADDRESS", "TEMPORAL_NAMESPACE"]
+SECRET_REFS = ["ENCRYPTION_MASTER_KEY", "TEMPORAL_API_KEY"]  # Secret Manager secrets, latest version
 
 
 def main(path):

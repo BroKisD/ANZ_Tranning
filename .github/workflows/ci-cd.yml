@@ -83,6 +83,8 @@ jobs:
           GCP_WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
           GCP_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
           DEMO_TEMPLATE_REPO: https://github.com/${{ github.repository }}
+          TEMPORAL_ADDRESS: ${{ secrets.TEMPORAL_ADDRESS }}
+          TEMPORAL_NAMESPACE: ${{ secrets.TEMPORAL_NAMESPACE }}
         run: |
           sed -i "s|image:.*|image: $IMAGE_BASE:${{ github.sha }}|g" service.yml
           pip install --quiet pyyaml
