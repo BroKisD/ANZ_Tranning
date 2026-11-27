@@ -61,21 +61,28 @@ type SecretReader interface {
 	GetSecret(ctx context.Context, ref string) (string, error)
 }
 
+// configError marks a problem retrying cannot fix (integration missing, bad
+// stored credentials, BYOK unavailable). Activities turn it into a
+// non-retryable Temporal error.
+type configError struct{ error }
+
+func (e configError) Unwrap() error { return e.error }
+
 // loadIntegration decrypts the owner's integration for provider into `into`.
 func loadIntegration(ctx context.Context, in IntegrationReader, masterKey []byte, ownerID, provider string, into any) error {
 	rec, err := in.GetIntegration(ctx, ownerID, provider)
 	if errors.Is(err, model.ErrNotFound) {
-		return fmt.Errorf("%s integration is not configured", provider)
+		return configError{fmt.Errorf("%s integration is not configured", provider)}
 	}
 	if err != nil {
 		return fmt.Errorf("load %s integration: %w", provider, err)
 	}
 	plain, err := crypto.Decrypt(masterKey, rec.EncryptedCredentials)
 	if err != nil {
-		return fmt.Errorf("decrypt %s integration: %w", provider, err)
+		return configError{fmt.Errorf("decrypt %s integration: %w", provider, err)}
 	}
 	if err := json.Unmarshal(plain, into); err != nil {
-		return fmt.Errorf("parse %s integration: %w", provider, err)
+		return configError{fmt.Errorf("parse %s integration: %w", provider, err)}
 	}
 	return nil
 }
@@ -87,7 +94,7 @@ func resolveAPIKey(ctx context.Context, secrets SecretReader, gcp model.GCPCreds
 		return "", nil
 	}
 	if secrets == nil {
-		return "", errors.New("BYOK api key is configured but secret access is not enabled")
+		return "", configError{errors.New("BYOK api key is configured but secret access is not enabled")}
 	}
 	key, err := secrets.GetSecret(ctx, gcp.AnthropicSecretRef)
 	if err != nil {
