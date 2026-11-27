@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -14,7 +15,7 @@ import (
 // Activity timing. Workflow code must stay deterministic: no time.Now, no I/O,
 // no goroutines; every side effect is an activity.
 const (
-	generateTimeout  = 30 * time.Minute // GenerateAndOpenPR StartToClose
+	generateTimeout  = 60 * time.Minute // GenerateAndOpenPR StartToClose; Claude generation can run ~45 min
 	heartbeatTimeout = time.Minute
 	watchMargin      = 5 * time.Minute // WatchDeploy runs this long past the monitor's own timeout
 	defaultWatch     = 20 * time.Minute
@@ -43,13 +44,24 @@ func lightCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
 	})
 }
 
+// claimCtx is for the compare-and-set claims. A retry after a lost completion
+// would see the status already moved and wrongly report "owned by another run",
+// leaving the project stuck, so a claim is attempted once and a failure is recorded.
+func claimCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
+	return workflow.WithActivityOptions(lightCtx(ctx, cfg), workflow.ActivityOptions{
+		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+}
+
 // generateCtx runs on the capped generate queue; generation is slow and costly, so it is not retried.
 func generateCtx(ctx workflow.Context) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           TaskQueueGenerate,
 		StartToCloseTimeout: generateTimeout,
 		HeartbeatTimeout:    heartbeatTimeout,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		// one retry covers a worker restart mid-run: generation starts from a clean
+		// workspace, the push is forced and the PR is reused
+		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2},
 	})
 }
 
@@ -62,7 +74,8 @@ func watchCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: d,
 		HeartbeatTimeout:    heartbeatTimeout,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		// safe to repeat: its writes are compare-and-set from deploying, so a restart resumes the watch
+		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
 }
 
@@ -71,6 +84,13 @@ func watchCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
 func failureMessage(err error) string {
 	if temporal.IsCanceledError(err) {
 		return "cancelled"
+	}
+	var te *temporal.TimeoutError
+	if errors.As(err, &te) {
+		if te.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT {
+			return "the step stopped responding (the worker restarted or crashed)"
+		}
+		return "the step took too long (timed out)"
 	}
 	var ae *temporal.ApplicationError
 	if errors.As(err, &ae) {
@@ -101,7 +121,7 @@ func ProjectWorkflow(ctx workflow.Context, in ProjectInput) (err error) {
 	light := lightCtx(ctx, cfg)
 
 	var claimed bool
-	if err = workflow.ExecuteActivity(light, act.ClaimProject, id).Get(ctx, &claimed); err != nil {
+	if err = workflow.ExecuteActivity(claimCtx(ctx, cfg), act.ClaimProject, id).Get(ctx, &claimed); err != nil {
 		return err
 	}
 	if !claimed {
@@ -164,7 +184,7 @@ func RedeployWorkflow(ctx workflow.Context, in ProjectInput) (err error) {
 	light := lightCtx(ctx, cfg)
 
 	var claimed bool
-	if err = workflow.ExecuteActivity(light, act.ClaimRedeploy, id).Get(ctx, &claimed); err != nil {
+	if err = workflow.ExecuteActivity(claimCtx(ctx, cfg), act.ClaimRedeploy, id).Get(ctx, &claimed); err != nil {
 		return err
 	}
 	if !claimed {

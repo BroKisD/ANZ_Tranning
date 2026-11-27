@@ -36,6 +36,8 @@ func NewTemporalRunner(c WorkflowClient, store ProjectStore, cfg WorkflowConfig,
 func (r *TemporalRunner) execute(ctx context.Context, projectID string, workflow any) error {
 	_, err := r.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: projectID, TaskQueue: TaskQueueProjects,
+		// without this the SDK hides an already-running workflow behind a nil error
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflow, ProjectInput{ProjectID: projectID, Config: r.cfg})
 	var started *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &started) {

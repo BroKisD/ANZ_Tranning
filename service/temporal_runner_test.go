@@ -3,6 +3,9 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
 	"reflect"
 	"runtime"
 	"strings"
@@ -70,6 +73,9 @@ func TestRunner_Start_StartsWorkflowWithProjectIDAsWorkflowID(t *testing.T) {
 	}
 	if len(c.started) != 1 || c.started[0].ID != "p1" || c.started[0].TaskQueue != service.TaskQueueProjects {
 		t.Fatalf("started = %+v", c.started)
+	}
+	if !c.started[0].WorkflowExecutionErrorWhenAlreadyStarted {
+		t.Fatal("without WorkflowExecutionErrorWhenAlreadyStarted the SDK hides an already-running workflow and ErrAlreadyRunning never fires")
 	}
 	if !strings.HasSuffix(c.workflow[0], "ProjectWorkflow") {
 		t.Fatalf("workflow = %s", c.workflow[0])
@@ -193,5 +199,20 @@ func TestRunner_SignalDeploy_MissingWorkflowIsIgnored(t *testing.T) {
 	c.sigErr = errors.New("connection refused")
 	if err := r.SignalDeploy(context.Background(), "p1", service.SignalDeployResult); err == nil {
 		t.Fatal("other signal errors must be returned")
+	}
+}
+
+func TestFailureMessage_ReadableForTimeoutsAndApplicationErrors(t *testing.T) {
+	hb := fmt.Errorf("activity error: %w", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil))
+	if got := service.FailureMessage(hb); !strings.Contains(got, "stopped responding") || strings.Contains(got, "activity error") {
+		t.Fatalf("heartbeat timeout message = %q", got)
+	}
+	st := fmt.Errorf("activity error: %w", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil))
+	if got := service.FailureMessage(st); !strings.Contains(got, "took too long") {
+		t.Fatalf("start-to-close timeout message = %q", got)
+	}
+	app := fmt.Errorf("activity error: %w", temporal.NewApplicationError("create repo: boom", "T"))
+	if got := service.FailureMessage(app); got != "create repo: boom" {
+		t.Fatalf("application error message = %q", got)
 	}
 }

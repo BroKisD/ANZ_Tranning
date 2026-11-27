@@ -112,10 +112,14 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if f.repoExists {
-			f.reply(w, 422, map[string]string{"message": "name already exists on this account"})
+			// GitHub's real shape: the reason is in errors[], not in the top-level message
+			f.reply(w, 422, map[string]any{"message": "Repository creation failed.",
+				"errors": []map[string]string{{"resource": "Repository", "code": "custom", "field": "name", "message": "name already exists on this account"}}})
 			return
 		}
 		f.reply(w, 201, map[string]string{"html_url": "https://github.com/acme/" + name, "default_branch": "main"})
+	case r.Method == "GET" && strings.Count(r.URL.Path, "/") == 3 && strings.HasPrefix(r.URL.Path, "/repos/acme/") && !f.repoExists:
+		f.reply(w, 404, map[string]string{"message": "Not Found"})
 	case r.Method == "GET" && strings.Count(r.URL.Path, "/") == 3 && strings.HasPrefix(r.URL.Path, "/repos/acme/"):
 		f.reply(w, 200, map[string]string{"html_url": "https://github.com" + strings.TrimPrefix(r.URL.Path, "/repos"), "default_branch": "main"})
 	case r.Method == "GET" && strings.Contains(r.URL.Path, "/contents/"):

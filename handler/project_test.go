@@ -261,6 +261,7 @@ func TestProjects_Deploy(t *testing.T) {
 	for err, want := range map[error]int{
 		model.ErrNotFound:          http.StatusNotFound,
 		service.ErrNotRedeployable: http.StatusConflict,
+		service.ErrAlreadyRunning:  http.StatusConflict,
 		errors.New("boom"):         http.StatusInternalServerError,
 	} {
 		a.runner.redeployErr = err

@@ -190,7 +190,7 @@ func (h *ProjectHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "deploying"})
 	case errors.Is(err, model.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "project not found")
-	case errors.Is(err, service.ErrNotRedeployable):
+	case errors.Is(err, service.ErrNotRedeployable), errors.Is(err, service.ErrAlreadyRunning):
 		writeErr(w, http.StatusConflict, "project cannot be deployed in its current state")
 	default:
 		log.Printf("redeploy project: %v", err)
