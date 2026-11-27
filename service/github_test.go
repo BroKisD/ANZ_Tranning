@@ -40,6 +40,13 @@ type fakeGitHub struct {
 	prCreateStatus int    // override for POST /pulls
 	mergeStatus    int    // override for PUT /pulls/N/merge
 
+	// repeat-after-partial-success switches
+	repoExists    bool   // POST create repo answers 422 "name already exists"
+	varsExist     bool   // POST variables answers 409; PATCH variables/{name} succeeds
+	contentsExist bool   // PUT contents without sha answers 422; GET contents gives a sha
+	prMerged      bool   // GET /pulls/N reports merged
+	createRepo422 string // when set, POST create repo answers 422 with this message
+
 	// Actions secret encryption key pair; the test decrypts what the app sends
 	varBodies       []map[string]any
 	runs            []map[string]any // GET .../workflows/deploy.yml/runs (newest first)
@@ -100,7 +107,23 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 		f.reply(w, 200, map[string]string{"type": f.accountType})
 	case r.Method == "POST" && (r.URL.Path == "/orgs/acme/repos" || r.URL.Path == "/user/repos"):
 		name, _ := body["name"].(string)
+		if f.createRepo422 != "" {
+			f.reply(w, 422, map[string]string{"message": f.createRepo422})
+			return
+		}
+		if f.repoExists {
+			f.reply(w, 422, map[string]string{"message": "name already exists on this account"})
+			return
+		}
 		f.reply(w, 201, map[string]string{"html_url": "https://github.com/acme/" + name, "default_branch": "main"})
+	case r.Method == "GET" && strings.Count(r.URL.Path, "/") == 3 && strings.HasPrefix(r.URL.Path, "/repos/acme/"):
+		f.reply(w, 200, map[string]string{"html_url": "https://github.com" + strings.TrimPrefix(r.URL.Path, "/repos"), "default_branch": "main"})
+	case r.Method == "GET" && strings.Contains(r.URL.Path, "/contents/"):
+		f.reply(w, 200, map[string]string{"sha": "abc123"})
+	case r.Method == "GET" && strings.Contains(r.URL.Path, "/pulls/"):
+		f.reply(w, 200, map[string]any{"merged": f.prMerged})
+	case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/actions/variables/"):
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/actions/workflows/deploy.yml/runs"):
 		f.reply(w, 200, map[string]any{"workflow_runs": f.runs})
 	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/jobs"):
@@ -115,11 +138,15 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 		f.reply(w, 200, map[string]string{"key_id": "key-1", "key": base64.StdEncoding.EncodeToString(f.pubKey[:])})
 	case r.Method == "PUT" && strings.Contains(r.URL.Path, "/actions/secrets/"):
 		w.WriteHeader(http.StatusCreated)
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/actions/variables") && f.varsExist:
+		f.reply(w, 409, map[string]string{"message": "Already exists"})
 	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/actions/variables"):
 		f.mu.Lock()
 		f.varBodies = append(f.varBodies, body)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
+	case r.Method == "PUT" && strings.Contains(r.URL.Path, "/contents/") && f.contentsExist && body["sha"] == nil:
+		f.reply(w, 422, map[string]string{"message": "Invalid request. \"sha\" wasn't supplied."})
 	case r.Method == "PUT" && strings.Contains(r.URL.Path, "/contents/"):
 		f.mu.Lock()
 		fail := f.contentFails > 0
@@ -736,5 +763,50 @@ func TestGitHub_CreateRepo_NoWebhookConfigured(t *testing.T) {
 		if strings.Contains(c, "/secrets/") {
 			t.Errorf("no secret expected without a webhook, got %s", c)
 		}
+	}
+}
+
+func TestGitHub_CreateRepo_RepeatAfterPartialSuccess(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.repoExists, f.varsExist, f.contentsExist = true, true, true
+	g := newGH(t, f, "")
+
+	url, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "1234abcd-0000-4000-8000-000000000000", "My App")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "https://github.com/acme/my-app-1234abcd" {
+		t.Fatalf("repo url = %q", url)
+	}
+	if !f.called("PATCH /repos/acme/my-app-1234abcd/actions/variables/GCP_PROJECT_ID") {
+		t.Fatalf("existing variable was not updated: %v", f.calls)
+	}
+	put := f.bodies["PUT /repos/acme/my-app-1234abcd/contents/.github/workflows/deploy.yml"]
+	if put["sha"] != "abc123" {
+		t.Fatalf("existing file was not re-put with its sha: %#v", put)
+	}
+}
+
+func TestGitHub_CreateRepo_OtherCreateErrorStillFails(t *testing.T) {
+	f := newFakeGitHub(t)
+	f.createRepo422 = "Repository creation failed: quota exceeded"
+	g := newGH(t, f, "")
+	if _, err := g.CreateRepo(context.Background(), ghCreds, testutil.GCPCreds, "id-1", "x"); err == nil {
+		t.Fatal("a 422 other than name-exists must still fail")
+	}
+}
+
+func TestGitHub_MergePR_AlreadyMergedIsSuccess(t *testing.T) {
+	const repo, pr = "https://github.com/acme/repo", "https://github.com/acme/repo/pull/7"
+	f := newFakeGitHub(t)
+	f.mergeStatus, f.prMerged = 405, true
+	if err := newGH(t, f, "").MergePR(context.Background(), ghCreds, repo, pr); err != nil {
+		t.Fatalf("already merged must be success: %v", err)
+	}
+
+	f2 := newFakeGitHub(t)
+	f2.mergeStatus = 405
+	if err := newGH(t, f2, "").MergePR(context.Background(), ghCreds, repo, pr); err == nil {
+		t.Fatal("not mergeable and not merged must still fail")
 	}
 }
