@@ -48,8 +48,10 @@ func lightCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
 // would see the status already moved and wrongly report "owned by another run",
 // leaving the project stuck, so a claim is attempted once and a failure is recorded.
 func claimCtx(ctx workflow.Context, cfg WorkflowConfig) workflow.Context {
-	return workflow.WithActivityOptions(lightCtx(ctx, cfg), workflow.ActivityOptions{
-		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1},
+	// full options, not layered on lightCtx: WithActivityOptions replaces rather than merges
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: cfg.StageTimeout,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 }
 

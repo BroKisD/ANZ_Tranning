@@ -6,9 +6,11 @@
 # reads PLATFORM_URL, API_KEY and GITHUB_TOKEN from scripts/test-server.env (git-ignored),
 # or from the environment. PLATFORM_URL defaults to the demo Cloud Run service.
 #
-# Optional: GITHUB_OWNER (org to create repos in), USER_ID (default demo-user),
+# The user is created on the server first (integrations and projects belong to a user row);
+# the same email is reused on later runs.
+# Optional: GITHUB_OWNER (org to create repos in), USER_EMAIL (default demo@example.com),
 #           PROJECT_NAME, PROMPT, TIMEOUT (seconds per phase, default 900),
-#           SKIP_CONNECT=1 (the token is already stored for USER_ID).
+#           SKIP_CONNECT=1 (the token is already stored for that user).
 # Needs curl and jq. Secrets are never printed or put on a command line.
 set -euo pipefail
 
@@ -26,14 +28,15 @@ PLATFORM_URL="${PLATFORM_URL:-https://anz-training-service-386127327935.asia-sou
 : "${API_KEY:?set API_KEY}"
 [ "${SKIP_CONNECT:-}" = 1 ] || : "${GITHUB_TOKEN:?set GITHUB_TOKEN (or SKIP_CONNECT=1)}"
 BASE="${PLATFORM_URL%/}"
-USER_ID="${USER_ID:-demo-user}"
+USER_EMAIL="${USER_EMAIL:-demo@example.com}"
 PROJECT_NAME="${PROJECT_NAME:-server-test-$(date +%H%M%S)}"
 PROMPT="${PROMPT:-A hello world web app}"
 TIMEOUT="${TIMEOUT:-900}"
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 
 HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT; chmod 600 "$HDR"
-printf 'x-api-key: %s\nX-User-ID: %s\nContent-Type: application/json\n' "$API_KEY" "$USER_ID" > "$HDR"
+set_user() { printf 'x-api-key: %s\nX-User-ID: %s\nContent-Type: application/json\n' "$API_KEY" "$1" > "$HDR"; }
+set_user "unset"
 
 step() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -58,10 +61,19 @@ step "1. Server reachable, API key accepted"
 call GET /api/integrations >/dev/null || fail "check PLATFORM_URL and API_KEY (and that the service allows unauthenticated invocations)"
 echo "ok"
 
+step "1b. Make sure the user exists: $USER_EMAIL"
+USER_JSON="$(jq -n --arg e "$USER_EMAIL" '{email:$e,name:"Demo User"}' | call POST /users json 2>/dev/null)" \
+  || USER_JSON="$(call GET "/users?email=$USER_EMAIL")" || fail "could not create or find the user"
+USER_ID="$(jq -r '.ID // .id // empty' <<<"$USER_JSON")"
+[ -n "$USER_ID" ] || fail "the server returned no user id: $USER_JSON"
+set_user "$USER_ID"
+echo "user id: $USER_ID"
+
 if [ "${SKIP_CONNECT:-}" != 1 ]; then
   step "2. Connect GitHub token (stored encrypted on the server)"
   jq -n --arg t "$GITHUB_TOKEN" --arg o "${GITHUB_OWNER:-}" '{token:$t} + (if $o != "" then {owner:$o} else {} end)' \
-    | call POST /api/integrations/github json >/dev/null || fail "token rejected: it needs the repo and workflow scopes"
+    | call POST /api/integrations/github json >/dev/null \
+    || fail "could not store the GitHub token (HTTP 422 above = GitHub rejected it: needs the repo and workflow scopes; 500 = server/database problem, see the revision log)"
   echo "ok"
 fi
 
