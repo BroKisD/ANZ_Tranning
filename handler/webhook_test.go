@@ -3,10 +3,13 @@ package handler_test
 import (
 	"anz-training/internal/testutil"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"anz-training/handler"
@@ -261,5 +264,105 @@ func TestWebhook_SuccessDoesNotOverrideRealFailure(t *testing.T) {
 	}
 	if p := a.store.Get("p1"); p.Status != model.StatusFailed {
 		t.Fatalf("a real failure was overwritten: %+v", p)
+	}
+}
+
+// ---- signalling the workflow ----
+
+type fakeSignaler struct {
+	mu      sync.Mutex
+	signals []string // "projectID:signal"
+	err     error
+}
+
+func (f *fakeSignaler) SignalDeploy(_ context.Context, projectID, signal string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.signals = append(f.signals, projectID+":"+signal)
+	return f.err
+}
+
+// signalAPI serves only the webhook, with a signaler attached.
+func signalAPI(t *testing.T, status, step string) (*httptest.Server, *testutil.MemStore, *fakeSignaler, string) {
+	t.Helper()
+	ms := testutil.NewMemStore()
+	ms.Add(model.Project{ID: "p1", OwnerID: "u1", Name: "App", Prompt: "x", Status: status, CurrentStep: step})
+	wh, err := handler.NewWebhookHandler(ms, rootSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := &fakeSignaler{}
+	wh.Signaler = sig
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/webhooks/github", wh.GitHubWebhook)
+	s := httptest.NewServer(mux)
+	t.Cleanup(s.Close)
+	return s, ms, sig, helper.WebhookSecretFor(rootSecret, "p1")
+}
+
+func TestWebhook_ResultApplied_SignalsDeployResult(t *testing.T) {
+	s, ms, sig, secret := signalAPI(t, model.StatusDeploying, model.StepDeploying)
+	if code, body := postHook(t, s, secret, map[string]string{"project_id": "p1", "status": "success", "live_url": "https://x.a.run.app"}); code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if ms.Get("p1").Status != model.StatusSuccess {
+		t.Fatal("MySQL must be written by the webhook")
+	}
+	if len(sig.signals) != 1 || sig.signals[0] != "p1:"+service.SignalDeployResult {
+		t.Fatalf("signals = %v", sig.signals)
+	}
+}
+
+func TestWebhook_Progress_SignalsDeployProgress_OnlyWhenTheStepAdvanced(t *testing.T) {
+	s, _, sig, secret := signalAPI(t, model.StatusDeploying, model.StepMerged)
+	post := func(step string) {
+		t.Helper()
+		if code, body := postHook(t, s, secret, map[string]string{"project_id": "p1", "step": step}); code != 200 {
+			t.Fatalf("%s: %d %s", step, code, body)
+		}
+	}
+	post(model.StepTesting)
+	post(model.StepBuilding) // late: testing already happened, ignored
+	post(model.StepTesting)  // repeated: ignored
+	if len(sig.signals) != 1 || sig.signals[0] != "p1:"+service.SignalDeployProgress {
+		t.Fatalf("signals = %v, want exactly one progress signal", sig.signals)
+	}
+}
+
+func TestWebhook_DuplicateDelivery_StillOKAndSignalIsHarmless(t *testing.T) {
+	s, _, sig, secret := signalAPI(t, model.StatusDeploying, model.StepDeploying)
+	ok := map[string]string{"project_id": "p1", "status": "success", "live_url": "https://x.a.run.app"}
+	if code, _ := postHook(t, s, secret, ok); code != 200 {
+		t.Fatal("first delivery failed")
+	}
+	code, body := postHook(t, s, secret, ok)
+	if code != 200 || !strings.Contains(body, "duplicate") {
+		t.Fatalf("duplicate: %d %s", code, body)
+	}
+	for _, sg := range sig.signals {
+		if sg != "p1:"+service.SignalDeployResult {
+			t.Fatalf("unexpected signal %q", sg)
+		}
+	}
+}
+
+func TestWebhook_Conflict_DoesNotSignal(t *testing.T) {
+	s, _, sig, secret := signalAPI(t, model.StatusSuccess, model.StepDeploying)
+	if code, _ := postHook(t, s, secret, map[string]string{"project_id": "p1", "status": "failed"}); code != 409 {
+		t.Fatalf("code = %d, want 409", code)
+	}
+	if len(sig.signals) != 0 {
+		t.Fatalf("a rejected result must not signal: %v", sig.signals)
+	}
+}
+
+func TestWebhook_SignalError_DoesNotFailTheRequest(t *testing.T) {
+	s, ms, sig, secret := signalAPI(t, model.StatusDeploying, model.StepDeploying)
+	sig.err = errors.New("temporal unreachable")
+	if code, body := postHook(t, s, secret, map[string]string{"project_id": "p1", "status": "success", "live_url": "https://x.a.run.app"}); code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if ms.Get("p1").Status != model.StatusSuccess {
+		t.Fatal("MySQL must still be updated when the signal fails")
 	}
 }
