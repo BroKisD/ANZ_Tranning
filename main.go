@@ -17,6 +17,8 @@ import (
 	"anz-training/helper"
 	"anz-training/repository"
 	"anz-training/service"
+
+	"go.temporal.io/sdk/client"
 )
 
 func main() {
@@ -167,13 +169,27 @@ func serve() {
 		}
 		gen = dg
 	}
-	orchCfg := service.OrchestratorConfig{MasterKey: masterKey, RepoOnly: repoOnly, Demo: demo, Deployer: deployer}
-	if pollDeploys {
-		orchCfg.RunWatcher = gh
-		orchCfg.Monitor = service.DeployMonitorConfig{Timeout: deployTimeout}
+	// Temporal runs every project's workflow; this process hosts the worker.
+	tc, err := client.Dial(client.Options{HostPort: temporalAddress()})
+	if err != nil {
+		log.Fatalf("temporal: %v", err)
 	}
-	orch := service.NewOrchestrator(store, store, gh, gen, secretReader, orchCfg)
-	ph := handler.NewProjectHandler(store, orch, handler.HeaderUserID)
+	defer tc.Close()
+	acts := &service.Activities{
+		Store: store, Integrations: store, GitHub: gh, Gen: gen,
+		Secrets: secretReader, Deployer: deployer, MasterKey: masterKey,
+	}
+	if pollDeploys {
+		acts.Monitor = service.NewDeployMonitor(store, gh, service.DeployMonitorConfig{Timeout: deployTimeout})
+	}
+	stopWorkers, err := service.StartWorkers(tc, acts, 0)
+	if err != nil {
+		log.Fatalf("temporal worker: %v", err)
+	}
+	runner := service.NewTemporalRunner(tc, store, service.WorkflowConfig{
+		RepoOnly: repoOnly, Demo: demo, Deploy: deploy, Polling: pollDeploys, DeployTimeout: deployTimeout,
+	}, deployer)
+	ph := handler.NewProjectHandler(store, runner, handler.HeaderUserID)
 	ph.NoGCP = noUserGCP
 	mux.HandleFunc("POST /api/projects", api(ph.Create))
 	mux.HandleFunc("GET /api/projects/{id}", api(ph.Get))
@@ -186,6 +202,7 @@ func serve() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		wh.Signaler = runner
 		mux.HandleFunc("POST /api/webhooks/github", wh.GitHubWebhook)
 	}
 
@@ -197,9 +214,6 @@ func serve() {
 
 	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if deploy { // fail deploys whose workflow went silent
-		go service.NewDeployWatchdog(store, deployTimeout, time.Minute).Run(stop)
-	}
 	cleaned := make(chan struct{})
 	go func() {
 		defer close(cleaned)
@@ -207,13 +221,20 @@ func serve() {
 		ctx, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
 		_ = srv.Shutdown(ctx)
-		_ = orch.Shutdown(ctx)
+		stopWorkers() // drains in-flight activities; unfinished runs resume on the next start
 	}()
 	log.Printf("listening on %s", srv.Addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 	<-cleaned // ErrServerClosed means shutdown started; wait for orchestrator cleanup
+}
+
+func temporalAddress() string {
+	if a := os.Getenv("TEMPORAL_ADDRESS"); a != "" {
+		return a
+	}
+	return "localhost:7233"
 }
 
 func runMigrate(args []string) {
