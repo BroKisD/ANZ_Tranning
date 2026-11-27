@@ -170,7 +170,11 @@ func serve() {
 		gen = dg
 	}
 	// Temporal runs every project's workflow; this process hosts the worker.
-	tc, err := client.Dial(client.Options{HostPort: temporalAddress()})
+	tcOpts, err := temporalClientOptions(os.Getenv)
+	if err != nil {
+		log.Fatalf("temporal: %v", err)
+	}
+	tc, err := client.Dial(tcOpts)
 	if err != nil {
 		log.Fatalf("temporal: %v", err)
 	}
@@ -228,13 +232,6 @@ func serve() {
 		log.Fatal(err)
 	}
 	<-cleaned // ErrServerClosed means shutdown started; wait for orchestrator cleanup
-}
-
-func temporalAddress() string {
-	if a := os.Getenv("TEMPORAL_ADDRESS"); a != "" {
-		return a
-	}
-	return "localhost:7233"
 }
 
 func runMigrate(args []string) {
