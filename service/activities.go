@@ -161,9 +161,8 @@ func (a *Activities) GenerateAndOpenPR(ctx context.Context, in GenerateInput) (s
 	}
 
 	defer func() { _ = a.Gen.Cleanup(p.ID) }() // success, push failure or half-written workspace
-	stop := a.keepAlive(ctx)
+	defer a.keepAlive(ctx)()                   // heartbeat through generation and the push
 	dir, err := a.Gen.GenerateAndTest(ctx, GenerateRequest{ProjectID: p.ID, Prompt: p.Prompt, AnthropicAPIKey: apiKey})
-	stop()
 	if err != nil {
 		return "", fmt.Errorf("generate: %w", err)
 	}
